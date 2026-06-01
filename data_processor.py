@@ -190,7 +190,7 @@ def consolidate_data(import_records, export_records, scl_only=True, warehouse_fi
         if scl_only:
             desc_clean = r["desc"].replace(" ", "").upper() if r["desc"] else ""
             voucher_clean = r["voucher"].replace(" ", "").upper() if r["voucher"] else ""
-            if "SCL" not in desc_clean and "SCL" not in voucher_clean and "VTAD" not in desc_clean and "VTAD" not in voucher_clean:
+            if "SCL" not in desc_clean and "SCL" not in voucher_clean and "VTAD" not in desc_clean and "VTAD" not in voucher_clean and "VTDA" not in desc_clean and "VTDA" not in voucher_clean:
                 continue
         if warehouse_filter and wh not in warehouse_filter:
             continue
@@ -234,7 +234,7 @@ def consolidate_data(import_records, export_records, scl_only=True, warehouse_fi
         if scl_only:
             desc_clean = r["desc"].replace(" ", "").upper() if r["desc"] else ""
             voucher_clean = r["voucher"].replace(" ", "").upper() if r["voucher"] else ""
-            if "SCL" not in desc_clean and "SCL" not in voucher_clean and "VTAD" not in desc_clean and "VTAD" not in voucher_clean:
+            if "SCL" not in desc_clean and "SCL" not in voucher_clean and "VTAD" not in desc_clean and "VTAD" not in voucher_clean and "VTDA" not in desc_clean and "VTDA" not in voucher_clean:
                 continue
         if warehouse_filter and wh not in warehouse_filter:
             continue
@@ -454,7 +454,7 @@ def generate_voltage_separation_data(import_records, export_records):
         # Space-insensitive SCL check
         desc_clean = r["desc"].replace(" ", "").upper() if r["desc"] else ""
         voucher_clean = r["voucher"].replace(" ", "").upper() if r["voucher"] else ""
-        if "SCL" not in desc_clean and "SCL" not in voucher_clean and "VTAD" not in desc_clean and "VTAD" not in voucher_clean:
+        if "SCL" not in desc_clean and "SCL" not in voucher_clean and "VTAD" not in desc_clean and "VTAD" not in voucher_clean and "VTDA" not in desc_clean and "VTDA" not in voucher_clean:
             continue
             
         proj_code = clean_project_code(r["desc"])
@@ -487,7 +487,7 @@ def generate_voltage_separation_data(import_records, export_records):
         # Space-insensitive SCL check
         desc_clean = r["desc"].replace(" ", "").upper() if r["desc"] else ""
         voucher_clean = r["voucher"].replace(" ", "").upper() if r["voucher"] else ""
-        if "SCL" not in desc_clean and "SCL" not in voucher_clean and "VTAD" not in desc_clean and "VTAD" not in voucher_clean:
+        if "SCL" not in desc_clean and "SCL" not in voucher_clean and "VTAD" not in desc_clean and "VTAD" not in voucher_clean and "VTDA" not in desc_clean and "VTDA" not in voucher_clean:
             continue
             
         proj_code = clean_project_code(r["desc"])
