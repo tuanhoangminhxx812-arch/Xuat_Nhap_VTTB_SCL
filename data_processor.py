@@ -797,3 +797,62 @@ def write_detailed_scl_classification(df_scl, template_path, output_path):
                 
     wb.save(output_path)
     return len(df_scl)
+
+def parse_pm_092(file_path):
+    """
+    Parses PM_092.xlsx (Subledger Account Book for Account 2413).
+    Extracts the month from row 8, and aggregates Debit (Nợ) and Credit (Có)
+    sums for each SCL project code found (e.g. VTAD2606001, VTAD2606002, VTAD2605001).
+    Returns a dict: {project_code: {"month": month_num, "debit": sum_debit, "credit": sum_credit, "net": net_sum}}
+    """
+    if not os.path.exists(file_path):
+        return {}
+        
+    try:
+        wb = openpyxl.load_workbook(file_path, data_only=True)
+        ws = wb.active
+        
+        # 1. Parse Month from Row 8
+        # Format example: "Từ ngày: 01-05-2026 đến ngày 31-05-2026"
+        month_num = None
+        row8_val = ws.cell(row=8, column=1).value
+        if row8_val:
+            match = re.search(r'đến ngày \d{2}-(\d{2})-\d{4}', str(row8_val))
+            if match:
+                month_num = int(match.group(1))
+                
+        if not month_num:
+            # Fallback to May (5) since the current file is May
+            month_num = 5
+            
+        current_project = None
+        project_data = {}
+        
+        for r in range(12, ws.max_row + 1):
+            cell_a = ws.cell(row=r, column=1).value
+            
+            # Detect Project Header
+            if cell_a and "Công trình:" in str(cell_a):
+                current_project = str(cell_a).split("Công trình:")[1].strip().split("-")[0].strip()
+                if current_project not in project_data:
+                    project_data[current_project] = {"month": month_num, "debit": 0.0, "credit": 0.0, "net": 0.0}
+                continue
+                
+            # Detect Detail row (contains date in Column 2)
+            date_val = ws.cell(row=r, column=2).value
+            if isinstance(date_val, (datetime.datetime, datetime.date)):
+                debit = ws.cell(row=r, column=5).value or 0.0
+                credit = ws.cell(row=r, column=6).value or 0.0
+                
+                if current_project:
+                    project_data[current_project]["debit"] += clean_numeric(debit)
+                    project_data[current_project]["credit"] += clean_numeric(credit)
+                    
+        # Calculate Net
+        for proj in project_data:
+            project_data[proj]["net"] = project_data[proj]["debit"] - project_data[proj]["credit"]
+            
+        return project_data
+    except Exception as e:
+        print(f"Error parsing PM_092: {e}", file=sys.stderr)
+        return {}

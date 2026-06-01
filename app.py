@@ -26,7 +26,8 @@ from data_processor import (
     classify_voltage,
     clean_project_code,
     PROJECT_NAMES,
-    write_detailed_scl_classification
+    write_detailed_scl_classification,
+    parse_pm_092
 )
 
 # Default File Paths in the Workspace Directory
@@ -462,6 +463,56 @@ with tab2:
         # Calculations for KPIs in selected month
         df_month_v = df_v[df_v["tháng"] == selected_month_num]
         
+        # Check if PM_092.xlsx is present
+        pm092_file = "PM_092.xlsx"
+        pm092_exists = os.path.exists(pm092_file)
+        
+        if pm092_exists:
+            pm_data = parse_pm_092(pm092_file)
+            st.markdown("### 📊 ĐỐI SOÁT CHÍNH THỨC VỚI SỔ CHI TIẾT SCL (PM_092)")
+            
+            recon_rows = []
+            all_recon_match = True
+            for proj_code in ["VTAD2606001", "VTAD2606002", "VTAD2605001"]:
+                our_sum = df_month_v[df_month_v["project_code"] == proj_code]["amount"].sum()
+                pm_proj_data = pm_data.get(proj_code, {})
+                pm_sum = pm_proj_data.get("net", 0.0) if pm_proj_data.get("month") == selected_month_num else 0.0
+                
+                diff = our_sum - pm_sum
+                is_match = abs(diff) < 1.0 # Float threshold
+                
+                recon_rows.append({
+                    "Mã công trình": proj_code,
+                    "Tên công trình": PROJECT_NAMES.get(proj_code, "Dự án Sửa chữa lớn"),
+                    "Số liệu Chương trình (A)": our_sum,
+                    "Số liệu Sổ chi tiết PM_092 (B)": pm_sum,
+                    "Chênh lệch (A - B)": diff,
+                    "Trạng thái": "✅ KHỚP CHÍNH XÁC" if is_match else "❌ LỆCH SỐ LIỆU"
+                })
+                if not is_match:
+                    all_recon_match = False
+                    
+            df_recon = pd.DataFrame(recon_rows)
+            
+            # Show a nice alert badge
+            if all_recon_match:
+                st.success("🎉 **[Khớp chính xác tuyệt đối]**: Số liệu tổng hợp từ 2 file gốc INV-007A và INV-009 khớp chính xác 100% từng đồng với Sổ chi tiết đối tượng tài khoản 2413 (PM_092.xlsx)!")
+            else:
+                st.warning("⚠️ **[Lệch số liệu]**: Có sự khác biệt giữa Số liệu tổng hợp từ file gốc và Sổ chi tiết tài khoản 2413 (PM_092.xlsx). Vui lòng kiểm tra lại!")
+                
+            # Render a premium table for reconciliation
+            st.dataframe(
+                df_recon,
+                column_config={
+                    "Số liệu Chương trình (A)": st.column_config.NumberColumn("Số liệu Chương trình (A)", format="%,.0f"),
+                    "Số liệu Sổ chi tiết PM_092 (B)": st.column_config.NumberColumn("Số liệu Sổ chi tiết PM_092 (B)", format="%,.0f"),
+                    "Chênh lệch (A - B)": st.column_config.NumberColumn("Chênh lệch (A - B)", format="%,.0f")
+                },
+                use_container_width=True,
+                hide_index=True
+            )
+            st.markdown("---")
+            
         total_scl_cost = df_month_v["amount"].sum()
         total_pp_share = total_scl_cost * 0.8079
         total_bl_share = total_scl_cost * 0.1921
