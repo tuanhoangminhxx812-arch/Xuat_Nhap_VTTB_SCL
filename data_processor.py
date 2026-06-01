@@ -423,7 +423,9 @@ def clean_project_code(desc):
     """
     if not desc:
         return None
-    words = str(desc).upper().split()
+    # Standardize VTDA typo to VTAD
+    desc_std = str(desc).upper().replace("VTDA", "VTAD")
+    words = desc_std.split()
     for w in words:
         if "VTAD" in w:
             w_clean = w.strip(".,()[]{}").split("-")[0]
@@ -441,14 +443,13 @@ def clean_project_code(desc):
 def generate_voltage_separation_data(import_records, export_records):
     """
     Filters SCL records, separates them by Low/Medium Voltage, 
-    standardizes SCL project names, and aggregates amounts by Month, Project Code, and Voltage.
+    standardizes SCL project names, aggregates amounts by Month, Project Code, and Voltage.
+    Subtracts SCL returns (Imports SCL returns) from exports.
     Returns a DataFrame.
     """
     rows = []
     
-    # We aggregate based on SCL export records since costs are posted on material issues
-    # But we can also look at SCL returns (NHAP) if they adjust the cost.
-    # In practice, sum of export amounts matches the SCL template totals exactly.
+    # Process Exports (XUAT)
     for r in export_records:
         # Space-insensitive SCL check
         desc_clean = r["desc"].replace(" ", "").upper() if r["desc"] else ""
@@ -460,8 +461,11 @@ def generate_voltage_separation_data(import_records, export_records):
         if not proj_code:
             proj_code = clean_project_code(r["voucher"])
             
+        # Fallback: if voucher contains .VH4. and it's SCL, it belongs to VTAD2606001
+        if not proj_code and ".VH4." in (r["voucher"] or ""):
+            proj_code = "VTAD2606001"
+            
         if not proj_code:
-            # Skip if no project code can be extracted
             continue
             
         vol = classify_voltage(r["code"], r["name"], r["desc"])
@@ -476,6 +480,39 @@ def generate_voltage_separation_data(import_records, export_records):
             "project_code": proj_code,
             "voltage": vol,
             "amount": r["amount"]
+        })
+        
+    # Process Imports (NHAP - SCL Returns)
+    for r in import_records:
+        # Space-insensitive SCL check
+        desc_clean = r["desc"].replace(" ", "").upper() if r["desc"] else ""
+        voucher_clean = r["voucher"].replace(" ", "").upper() if r["voucher"] else ""
+        if "SCL" not in desc_clean and "SCL" not in voucher_clean and "VTAD" not in desc_clean and "VTAD" not in voucher_clean:
+            continue
+            
+        proj_code = clean_project_code(r["desc"])
+        if not proj_code:
+            proj_code = clean_project_code(r["voucher"])
+            
+        # Fallback: if voucher contains .VH4. and it's SCL, it belongs to VTAD2606001
+        if not proj_code and ".VH4." in (r["voucher"] or ""):
+            proj_code = "VTAD2606001"
+            
+        if not proj_code:
+            continue
+            
+        vol = classify_voltage(r["code"], r["name"], r["desc"])
+        
+        # Get Month
+        m = None
+        if isinstance(r["date"], (datetime.datetime, datetime.date)):
+            m = r["date"].month
+            
+        rows.append({
+            "tháng": m,
+            "project_code": proj_code,
+            "voltage": vol,
+            "amount": -r["amount"] # Subtract return amount
         })
         
     df = pd.DataFrame(rows)

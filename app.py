@@ -185,27 +185,6 @@ st.sidebar.markdown("### ⚙️ Cấu hình dữ liệu")
 scl_only = st.sidebar.toggle("🔍 Chỉ lọc giao dịch SCL (Sửa chữa lớn)", value=True, 
                              help="Nếu bật, chỉ tổng hợp các giao dịch phục vụ sửa chữa lớn (có từ khóa SCL trong nội dung/chứng từ).")
 
-# File Watcher Status Info
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 🔄 Theo dõi tự động (Auto-Watch)")
-st.sidebar.info("Ứng dụng tự động theo dõi các file trong thư mục gốc. Khi anh lưu đè file mới, dữ liệu sẽ tự động tổng hợp lại cả 2 báo cáo.")
-
-# Display default files status
-st.sidebar.markdown("**Trạng thái file cục bộ:**")
-def check_exists_label(path):
-    if os.path.exists(path):
-        mtime = datetime.datetime.fromtimestamp(os.path.getmtime(path)).strftime("%H:%M:%S %d/%m/%Y")
-        return f"✅ Có sẵn ({mtime.split()[0]})"
-    return "❌ Thiếu file"
-
-st.sidebar.text(f"File Nhập (INV-007A):\n{check_exists_label(DEFAULT_IMPORT)}")
-st.sidebar.text(f"File Xuất (INV-009):\n{check_exists_label(DEFAULT_EXPORT)}")
-st.sidebar.text(f"Mẫu Báo Cáo Gộp:\n{check_exists_label(DEFAULT_TEMPLATE)}")
-st.sidebar.text(f"Mẫu Tách PP-BL:\n{check_exists_label(DEFAULT_TEMPLATE_V)}")
-st.sidebar.text(f"Mẫu Phân Loại (P.Loại):\n{check_exists_label('TachPP_BL mẫu.xlsx')}")
-st.sidebar.text(f"Báo cáo gộp đã tạo:\n{check_exists_label(DEFAULT_OUTPUT)}")
-st.sidebar.text(f"Báo cáo PP-BL đã tạo:\n{check_exists_label(DEFAULT_OUTPUT_V)}")
-st.sidebar.text(f"Chi tiết phân loại đã tạo:\n{check_exists_label(DEFAULT_OUTPUT_DETAILED)}")
 
 # Manual file overrides (Upload custom files)
 st.sidebar.markdown("---")
@@ -365,11 +344,61 @@ with tab1:
         st.session_state.auto_consolidated = False
 
     if not df_filtered.empty:
-        st.markdown("### 📈 Biểu đồ Xu hướng Tháng (Nhập vs Xuất)")
-        # Aggregate sums by month
-        df_filtered["tháng_str"] = df_filtered["tháng"].fillna(0).astype(int).apply(lambda x: f"Tháng {x}" if x > 0 else "Không rõ")
-        chart_data = df_filtered.groupby("tháng_str")[["Nhập - Thành tiền", "Xuất - Thành tiền"]].sum()
-        st.bar_chart(chart_data)
+        st.markdown("### 📈 Phân Tích & Đối Soát Phát Sinh Theo Từng Tháng")
+        
+        # Calculate Monthly Summary Data
+        df_grp = df_filtered.copy()
+        df_grp["tháng"] = df_grp["tháng"].fillna(0).astype(int)
+        
+        months_list = sorted(df_grp["tháng"].unique())
+        monthly_data = []
+        for m in months_list:
+            month_name = f"Tháng {m}" if m > 0 else "Không rõ"
+            df_m = df_grp[df_grp["tháng"] == m]
+            
+            # Nhập
+            nhap_df = df_m[df_m["Nhập - Thành tiền"] > 0]
+            nhap_val = nhap_df["Nhập - Thành tiền"].sum()
+            nhap_count = len(nhap_df)
+            
+            # Xuất
+            xuat_df = df_m[df_m["Xuất - Thành tiền"] > 0]
+            xuat_val = xuat_df["Xuất - Thành tiền"].sum()
+            xuat_count = len(xuat_df)
+            
+            monthly_data.append({
+                "Tháng": month_name,
+                "Tổng Nhập (VNĐ)": nhap_val,
+                "Số dòng Nhập": nhap_count,
+                "Tổng Xuất (VNĐ)": xuat_val,
+                "Số dòng Xuất": xuat_count
+            })
+            
+        df_monthly_summary = pd.DataFrame(monthly_data)
+        
+        # Render side-by-side: Table on Left, Chart on Right
+        col_t1, col_t2 = st.columns([5, 5])
+        
+        with col_t1:
+            st.markdown("##### 📋 Bảng tổng hợp số liệu từng tháng")
+            st.dataframe(
+                df_monthly_summary,
+                column_config={
+                    "Tổng Nhập (VNĐ)": st.column_config.NumberColumn("Tổng Nhập (VNĐ)", format="%,.0f"),
+                    "Số dòng Nhập": st.column_config.NumberColumn("Số dòng Nhập", format="%d"),
+                    "Tổng Xuất (VNĐ)": st.column_config.NumberColumn("Tổng Xuất (VNĐ)", format="%,.0f"),
+                    "Số dòng Xuất": st.column_config.NumberColumn("Số dòng Xuất", format="%d")
+                },
+                use_container_width=True,
+                hide_index=True,
+                height=300
+            )
+            
+        with col_t2:
+            st.markdown("##### 📊 Biểu đồ xu hướng phát sinh")
+            df_filtered["tháng_str"] = df_filtered["tháng"].fillna(0).astype(int).apply(lambda x: f"Tháng {x}" if x > 0 else "Không rõ")
+            chart_data = df_filtered.groupby("tháng_str")[["Nhập - Thành tiền", "Xuất - Thành tiền"]].sum()
+            st.bar_chart(chart_data, height=300)
 
     st.markdown("### 📋 Xem trước dữ liệu tổng hợp")
     if not df_filtered.empty:
@@ -499,6 +528,7 @@ with tab2:
                 "Khâu bán lẻ (19.21% - G)": total_bl_share
             }
             df_preview = pd.concat([df_preview, pd.DataFrame([tot_row])], ignore_index=True)
+            df_preview["STT"] = df_preview["STT"].astype(str)
             
             st.dataframe(
                 df_preview,
