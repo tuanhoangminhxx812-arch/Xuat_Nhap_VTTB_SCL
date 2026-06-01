@@ -192,6 +192,7 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("### 📤 Tải lên file tùy chỉnh (Tùy chọn)")
 uploaded_import = st.sidebar.file_uploader("Upload file Nhập mới (INV-007A)", type=["xlsx"])
 uploaded_export = st.sidebar.file_uploader("Upload file Xuất mới (INV-009)", type=["xlsx"])
+uploaded_pm092 = st.sidebar.file_uploader("Upload sổ chi tiết SCL (PM_092)", type=["xlsx"])
 
 # ---- AUTO-CONSOLIDATION LOGIC (FILE WATCHER) ----
 current_mtimes = get_file_mtimes()
@@ -463,9 +464,16 @@ with tab2:
         # Calculations for KPIs in selected month
         df_month_v = df_v[df_v["tháng"] == selected_month_num]
         
-        # Check if PM_092.xlsx is present
-        pm092_file = "PM_092.xlsx"
-        pm092_exists = os.path.exists(pm092_file)
+        # Check if PM_092 is uploaded or local file is present
+        pm092_file = None
+        pm092_exists = False
+        
+        if uploaded_pm092 is not None:
+            pm092_file = uploaded_pm092
+            pm092_exists = True
+        elif os.path.exists("PM_092.xlsx"):
+            pm092_file = "PM_092.xlsx"
+            pm092_exists = True
         
         if pm092_exists:
             pm_data = parse_pm_092(pm092_file)

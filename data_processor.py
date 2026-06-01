@@ -805,7 +805,7 @@ def parse_pm_092(file_path):
     sums for each SCL project code found (e.g. VTAD2606001, VTAD2606002, VTAD2605001).
     Returns a dict: {project_code: {"month": month_num, "debit": sum_debit, "credit": sum_credit, "net": net_sum}}
     """
-    if not os.path.exists(file_path):
+    if isinstance(file_path, str) and not os.path.exists(file_path):
         return {}
         
     try:
