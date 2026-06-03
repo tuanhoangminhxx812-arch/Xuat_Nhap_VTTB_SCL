@@ -482,9 +482,16 @@ with tab2:
             recon_rows = []
             all_recon_match = True
             for proj_code in ["VTAD2606001", "VTAD2606002", "VTAD2605001"]:
-                our_sum = df_month_v[df_month_v["project_code"] == proj_code]["amount"].sum()
-                pm_proj_data = pm_data.get(proj_code, {})
-                pm_sum = pm_proj_data.get("net", 0.0) if pm_proj_data.get("month") == selected_month_num else 0.0
+                # Net = Xuất - Thu hồi per project
+                df_proj_m = df_month_v[df_month_v["project_code"] == proj_code]
+                if "row_type" in df_proj_m.columns:
+                    xuat_s    = df_proj_m[df_proj_m["row_type"] == "Xuất"]["amount"].sum()
+                    thuhoi_s  = df_proj_m[df_proj_m["row_type"] == "Thu hồi"]["amount"].sum()
+                    our_sum   = xuat_s - thuhoi_s
+                else:
+                    our_sum = df_proj_m["amount"].sum()
+                pm_proj_month_data = pm_data.get(proj_code, {}).get(selected_month_num, {})
+                pm_sum = pm_proj_month_data.get("net", 0.0)
                 
                 diff = our_sum - pm_sum
                 is_match = abs(diff) < 1.0 # Float threshold
@@ -521,26 +528,49 @@ with tab2:
             )
             st.markdown("---")
             
-        total_scl_cost = df_month_v["amount"].sum()
+        # --- KPI: tính Net (Xuất - Thu hồi) ---
+        has_row_type = "row_type" in df_month_v.columns
+        if has_row_type:
+            df_xuat_m    = df_month_v[df_month_v["row_type"] == "Xuất"]
+            df_thu_hoi_m = df_month_v[df_month_v["row_type"] == "Thu hồi"]
+            total_xuat    = df_xuat_m["amount"].sum()
+            total_thu_hoi = df_thu_hoi_m["amount"].sum()
+            total_scl_cost = total_xuat - total_thu_hoi
+        else:
+            total_xuat    = df_month_v["amount"].sum()
+            total_thu_hoi = 0.0
+            total_scl_cost = total_xuat
+        
         total_pp_share = total_scl_cost * 0.8079
         total_bl_share = total_scl_cost * 0.1921
+        
+        # KPI Cards (thêm card Thu hồi nếu có)
+        thu_hoi_kpi_html = ""
+        if total_thu_hoi > 0:
+            thu_hoi_kpi_html = f"""
+            <div class="kpi-card kpi-count" style="border-top: 4px solid #E67E22;">
+                <div class="kpi-title" style="color:#E67E22;">↩ Thu Hồi VTTB (Giảm trừ)</div>
+                <div class="kpi-value" style="color: #E67E22;">-{total_thu_hoi:,.0f} <span style='font-size: 1.1rem;'>VNĐ</span></div>
+                <div class="kpi-sub">Nhập lại kho từ công trình trong tháng</div>
+            </div>"""
         
         st.markdown(f"""
         <div class="kpi-container">
             <div class="kpi-card kpi-voltage">
-                <div class="kpi-title">Tổng Chi Phí SCL (Tháng {int(selected_month_num)})</div>
-                <div class="kpi-value">{total_scl_cost:,.0f} <span style='font-size: 1.1rem;'>VNĐ</span></div>
-                <div class="kpi-sub">Tổng chi phí phát sinh trong tháng</div>
+                <div class="kpi-title">↑ Xuất SCL (Tháng {int(selected_month_num)})</div>
+                <div class="kpi-value">{total_xuat:,.0f} <span style='font-size: 1.1rem;'>VNĐ</span></div>
+                <div class="kpi-sub">Tổng xuất ra công trình trong tháng</div>
             </div>
+            {thu_hoi_kpi_html}
             <div class="kpi-card kpi-import">
+                <div class="kpi-title">✅ Net Chi Phí SCL</div>
+                <div class="kpi-value">{total_scl_cost:,.0f} <span style='font-size: 1.1rem;'>VNĐ</span></div>
+                <div class="kpi-sub">Xuất − Thu hồi = Chi phí thực tế</div>
+            </div>
+            <div class="kpi-card kpi-export">
                 <div class="kpi-title">Khâu Phân Phối (80.79%)</div>
                 <div class="kpi-value">{total_pp_share:,.0f} <span style='font-size: 1.1rem;'>VNĐ</span></div>
                 <div class="kpi-sub">TK: 627611-1310-610</div>
-            </div>
-            <div class="kpi-card kpi-export">
-                <div class="kpi-title">Khâu Bán Lẻ (19.21%)</div>
-                <div class="kpi-value">{total_bl_share:,.0f} <span style='font-size: 1.1rem;'>VNĐ</span></div>
-                <div class="kpi-sub">TK: 627611-1320-610</div>
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -557,19 +587,31 @@ with tab2:
             df_proj = df_month_v[df_month_v["project_code"] == proj_code]
             
             for v_idx, vol in enumerate(["Trung thế", "Hạ thế"]):
-                df_vol = df_proj[df_proj["voltage"] == vol]
-                amt = df_vol["amount"].sum() if not df_vol.empty else 0.0
-                dist = amt * 0.8079
-                retail = amt * 0.1921 # equivalent to E - F
+                if has_row_type:
+                    xuat_df  = df_proj[(df_proj["voltage"] == vol) & (df_proj["row_type"] == "Xuất")]
+                    thu_df   = df_proj[(df_proj["voltage"] == vol) & (df_proj["row_type"] == "Thu hồi")]
+                    xuat_amt = xuat_df["amount"].sum() if not xuat_df.empty else 0.0
+                    thu_amt  = thu_df["amount"].sum()  if not thu_df.empty  else 0.0
+                    amt = xuat_amt - thu_amt
+                else:
+                    df_vol   = df_proj[df_proj["voltage"] == vol]
+                    xuat_amt = df_vol["amount"].sum() if not df_vol.empty else 0.0
+                    thu_amt  = 0.0
+                    amt      = xuat_amt
+                    
+                dist   = amt * 0.8079
+                retail = amt * 0.1921
                 
                 preview_rows.append({
-                    "STT": stt if v_idx == 0 else "",
-                    "Tên công trình (Chi phí Sửa chữa lớn)": proj_name if v_idx == 0 else "",
-                    "Mã CT": proj_code,
-                    "Trung-Hạ thế": vol,
-                    "Tổng CP (E)": amt,
-                    "Khâu phân phối (80.79% - F)": dist,
-                    "Khâu bán lẻ (19.21% - G)": retail
+                    "STT":            stt if v_idx == 0 else "",
+                    "Tên công trình": proj_name if v_idx == 0 else "",
+                    "Mã CT":          proj_code,
+                    "Trung-Hạ thế":   vol,
+                    "Xuất (đ)":       xuat_amt,
+                    "Thu hồi (đ)":    -thu_amt if thu_amt > 0 else 0.0,
+                    "Net CP - E (đ)": amt,
+                    "Phân phối - F":  dist,
+                    "Bán lẻ - G":     retail,
                 })
             stt += 1
             
@@ -578,13 +620,15 @@ with tab2:
         if not df_preview.empty:
             # Append Total Sum Row
             tot_row = {
-                "STT": "Tổng cộng",
-                "Tên công trình (Chi phí Sửa chữa lớn)": "",
-                "Mã CT": "",
-                "Trung-Hạ thế": "",
-                "Tổng CP (E)": total_scl_cost,
-                "Khâu phân phối (80.79% - F)": total_pp_share,
-                "Khâu bán lẻ (19.21% - G)": total_bl_share
+                "STT":            "Tổng cộng",
+                "Tên công trình": "",
+                "Mã CT":          "",
+                "Trung-Hạ thế":   "",
+                "Xuất (đ)":       total_xuat,
+                "Thu hồi (đ)":    -total_thu_hoi if total_thu_hoi > 0 else 0.0,
+                "Net CP - E (đ)": total_scl_cost,
+                "Phân phối - F":  total_pp_share,
+                "Bán lẻ - G":     total_bl_share
             }
             df_preview = pd.concat([df_preview, pd.DataFrame([tot_row])], ignore_index=True)
             df_preview["STT"] = df_preview["STT"].astype(str)
@@ -592,9 +636,11 @@ with tab2:
             st.dataframe(
                 df_preview,
                 column_config={
-                    "Tổng CP (E)": st.column_config.NumberColumn("Tổng CP (E)", format="%,.0f"),
-                    "Khâu phân phối (80.79% - F)": st.column_config.NumberColumn("Khâu phân phối (80.79% - F)", format="%,.0f"),
-                    "Khâu bán lẻ (19.21% - G)": st.column_config.NumberColumn("Khâu bán lẻ (19.21% - G)", format="%,.0f")
+                    "Xuất (đ)":       st.column_config.NumberColumn("Xuất (đ)", format="%,.0f"),
+                    "Thu hồi (đ)":    st.column_config.NumberColumn("Thu hồi (đ)", format="%,.0f"),
+                    "Net CP - E (đ)": st.column_config.NumberColumn("Net CP - E (đ)", format="%,.0f"),
+                    "Phân phối - F":  st.column_config.NumberColumn("Phân phối - F", format="%,.0f"),
+                    "Bán lẻ - G":     st.column_config.NumberColumn("Bán lẻ - G", format="%,.0f")
                 },
                 use_container_width=True,
                 height=300
