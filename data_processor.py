@@ -965,8 +965,28 @@ def parse_pm_092(file_path):
                 
             # Detect Detail row (contains date in Column 2)
             date_val = ws.cell(row=r, column=2).value
+            m_num = None
             if isinstance(date_val, (datetime.datetime, datetime.date)):
                 m_num = date_val.month
+            elif isinstance(date_val, (int, float)):
+                try:
+                    dt = datetime.datetime(1899, 12, 30) + datetime.timedelta(days=date_val)
+                    m_num = dt.month
+                except:
+                    pass
+            elif date_val:
+                date_str = str(date_val).strip("'\" \t")
+                # Try YYYY-MM-DD
+                m = re.search(r'\d{4}-(\d{2})-\d{2}', date_str)
+                if m:
+                    m_num = int(m.group(1))
+                else:
+                    # Try DD/MM/YYYY or DD-MM-YYYY
+                    m = re.search(r'\d{2}[-/](\d{2})[-/]\d{4}', date_str)
+                    if m:
+                        m_num = int(m.group(1))
+            
+            if m_num is not None:
                 debit = ws.cell(row=r, column=5).value or 0.0
                 credit = ws.cell(row=r, column=6).value or 0.0
                 

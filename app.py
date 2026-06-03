@@ -547,33 +547,35 @@ with tab2:
         # KPI Cards (thêm card Thu hồi nếu có)
         thu_hoi_kpi_html = ""
         if total_thu_hoi > 0:
-            thu_hoi_kpi_html = f"""
-            <div class="kpi-card kpi-count" style="border-top: 4px solid #E67E22;">
-                <div class="kpi-title" style="color:#E67E22;">↩ Thu Hồi VTTB (Giảm trừ)</div>
-                <div class="kpi-value" style="color: #E67E22;">-{total_thu_hoi:,.0f} <span style='font-size: 1.1rem;'>VNĐ</span></div>
-                <div class="kpi-sub">Nhập lại kho từ công trình trong tháng</div>
-            </div>"""
+            thu_hoi_kpi_html = (
+                f'<div class="kpi-card kpi-count" style="border-top: 4px solid #E67E22;">'
+                f'<div class="kpi-title" style="color:#E67E22;">↩ Thu Hồi VTTB (Giảm trừ)</div>'
+                f'<div class="kpi-value" style="color: #E67E22;">-{total_thu_hoi:,.0f} <span style="font-size: 1.1rem;">VNĐ</span></div>'
+                f'<div class="kpi-sub">Nhập lại kho từ công trình trong tháng</div>'
+                f'</div>'
+            )
         
-        st.markdown(f"""
-        <div class="kpi-container">
-            <div class="kpi-card kpi-voltage">
-                <div class="kpi-title">↑ Xuất SCL (Tháng {int(selected_month_num)})</div>
-                <div class="kpi-value">{total_xuat:,.0f} <span style='font-size: 1.1rem;'>VNĐ</span></div>
-                <div class="kpi-sub">Tổng xuất ra công trình trong tháng</div>
-            </div>
-            {thu_hoi_kpi_html}
-            <div class="kpi-card kpi-import">
-                <div class="kpi-title">✅ Net Chi Phí SCL</div>
-                <div class="kpi-value">{total_scl_cost:,.0f} <span style='font-size: 1.1rem;'>VNĐ</span></div>
-                <div class="kpi-sub">Xuất − Thu hồi = Chi phí thực tế</div>
-            </div>
-            <div class="kpi-card kpi-export">
-                <div class="kpi-title">Khâu Phân Phối (80.79%)</div>
-                <div class="kpi-value">{total_pp_share:,.0f} <span style='font-size: 1.1rem;'>VNĐ</span></div>
-                <div class="kpi-sub">TK: 627611-1310-610</div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+        kpi_html = (
+            f'<div class="kpi-container">'
+            f'<div class="kpi-card kpi-voltage">'
+            f'<div class="kpi-title">↑ Xuất SCL (Tháng {int(selected_month_num)})</div>'
+            f'<div class="kpi-value">{total_xuat:,.0f} <span style="font-size: 1.1rem;">VNĐ</span></div>'
+            f'<div class="kpi-sub">Tổng xuất ra công trình trong tháng</div>'
+            f'</div>'
+            f'{thu_hoi_kpi_html}'
+            f'<div class="kpi-card kpi-import">'
+            f'<div class="kpi-title">✅ Net Chi Phí SCL</div>'
+            f'<div class="kpi-value">{total_scl_cost:,.0f} <span style="font-size: 1.1rem;">VNĐ</span></div>'
+            f'<div class="kpi-sub">Xuất - Thu hồi = Chi phí thực tế</div>'
+            f'</div>'
+            f'<div class="kpi-card kpi-export">'
+            f'<div class="kpi-title">Khâu Phân Phối (80.79%)</div>'
+            f'<div class="kpi-value">{total_pp_share:,.0f} <span style="font-size: 1.1rem;">VNĐ</span></div>'
+            f'<div class="kpi-sub">TK: 627611-1310-610</div>'
+            f'</div>'
+            f'</div>'
+        )
+        st.markdown(kpi_html, unsafe_allow_html=True)
         
         # Construct monthly preview table matching Excel exactly
         st.markdown(f"### 📋 Xem trước Trang Tính 'Tháng {int(selected_month_num)}'")
