@@ -34,11 +34,11 @@ from data_processor import (
 DEFAULT_IMPORT = "INV-007Atừ 01012026 đến 31052026.xlsx"
 DEFAULT_EXPORT = "INV-009 từ 01012026 đến 31052026.xlsx"
 DEFAULT_TEMPLATE = "Xuat_Nhap(mau).xlsx"
-DEFAULT_OUTPUT = "Xuat_Nhap_TongHop.xlsx"
+DEFAULT_OUTPUT = "Xuat_Nhap_TongHop_KetQua.xlsx"
 
 DEFAULT_TEMPLATE_V = "Tách PP-BL.xlsx"
-DEFAULT_OUTPUT_V = "Tach_ChiPhi_PP_BL.xlsx"
-DEFAULT_OUTPUT_DETAILED = "TachPP_BL_ChiTiet.xlsx"
+DEFAULT_OUTPUT_V = "Tach_ChiPhi_PP_BL_KetQua.xlsx"
+DEFAULT_OUTPUT_DETAILED = "TachPP_BL_ChiTiet_KetQua.xlsx"
 
 # Custom Premium Styling & Outfitted Typography
 st.markdown("""
@@ -424,7 +424,7 @@ with tab1:
             with open(temp_download_path, "rb") as file:
                 st.download_button(
                     label="📥 Tải xuống File Tổng Hợp Báo Cáo Gộp (Đã áp dụng bộ lọc hiện tại)",
-                    data=file,
+                    data=file.read(),
                     file_name="Xuat_Nhap_TongHop_Loc.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True,
@@ -655,8 +655,8 @@ with tab2:
                 with open(DEFAULT_OUTPUT_V, "rb") as file:
                     st.download_button(
                         label="📥 Tải Báo Cáo Tách PP-BL (Tháng & Công thức)",
-                        data=file,
-                        file_name="Tach_ChiPhi_PP_BL.xlsx",
+                        data=file.read(),
+                        file_name="Tach_ChiPhi_PP_BL_KetQua.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=True,
                         key="tab2_download_btn"
@@ -668,8 +668,8 @@ with tab2:
                 with open(DEFAULT_OUTPUT_DETAILED, "rb") as file:
                     st.download_button(
                         label="📥 Tải Chi Tiết Phân Loại SCL (Từng Dòng)",
-                        data=file,
-                        file_name="TachPP_BL_ChiTiet.xlsx",
+                        data=file.read(),
+                        file_name="TachPP_BL_ChiTiet_KetQua.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=True,
                         key="tab2_download_detailed_btn"
