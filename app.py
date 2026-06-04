@@ -3,6 +3,7 @@ import pandas as pd
 import datetime
 import os
 import sys
+import io
 
 # Set up page configurations first
 st.set_page_config(
@@ -421,15 +422,16 @@ with tab1:
         )
         
         if download_ready:
-            with open(temp_download_path, "rb") as file:
-                st.download_button(
-                    label="📥 Tải xuống File Tổng Hợp Báo Cáo Gộp (Đã áp dụng bộ lọc hiện tại)",
-                    data=file.read(),
-                    file_name="Xuat_Nhap_TongHop_Loc.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                    key="tab1_download_btn"
-                )
+            with open(temp_download_path, "rb") as f:
+                file_bytes = io.BytesIO(f.read())
+            st.download_button(
+                label="📥 Tải xuống File Tổng Hợp Báo Cáo Gộp (Đã áp dụng bộ lọc hiện tại)",
+                data=file_bytes,
+                file_name="Xuat_Nhap_TongHop_Loc.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="tab1_download_btn"
+            )
     else:
         st.warning("⚠️ Không có giao dịch nào thỏa mãn bộ lọc hiện tại.")
 
@@ -652,30 +654,32 @@ with tab2:
         col_dl1, col_dl2 = st.columns(2)
         with col_dl1:
             if os.path.exists(DEFAULT_OUTPUT_V):
-                with open(DEFAULT_OUTPUT_V, "rb") as file:
-                    st.download_button(
-                        label="📥 Tải Báo Cáo Tách PP-BL (Tháng & Công thức)",
-                        data=file.read(),
-                        file_name="Tach_ChiPhi_PP_BL_KetQua.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True,
-                        key="tab2_download_btn"
-                    )
+                with open(DEFAULT_OUTPUT_V, "rb") as f:
+                    buf_v = io.BytesIO(f.read())
+                st.download_button(
+                    label="📥 Tải Báo Cáo Tách PP-BL (Tháng & Công thức)",
+                    data=buf_v,
+                    file_name="Tach_ChiPhi_PP_BL_KetQua.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    key="tab2_download_btn"
+                )
             else:
-                st.error("⚠️ Báo cáo tách PP-BL chưa được tạo.")
+                st.error("⚠️ Báo cáo tách PP-BL chưa được tạo. Hãy nhấn 'Làm mới dữ liệu'.")
         with col_dl2:
             if os.path.exists(DEFAULT_OUTPUT_DETAILED):
-                with open(DEFAULT_OUTPUT_DETAILED, "rb") as file:
-                    st.download_button(
-                        label="📥 Tải Chi Tiết Phân Loại SCL (Từng Dòng)",
-                        data=file.read(),
-                        file_name="TachPP_BL_ChiTiet_KetQua.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True,
-                        key="tab2_download_detailed_btn"
-                    )
+                with open(DEFAULT_OUTPUT_DETAILED, "rb") as f:
+                    buf_det = io.BytesIO(f.read())
+                st.download_button(
+                    label="📥 Tải Chi Tiết Phân Loại SCL (Từng Dòng)",
+                    data=buf_det,
+                    file_name="TachPP_BL_ChiTiet_KetQua.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    key="tab2_download_detailed_btn"
+                )
             else:
-                st.error("⚠️ Báo cáo chi tiết SCL chưa được tạo.")
+                st.error("⚠️ Báo cáo chi tiết SCL chưa được tạo. Hãy nhấn 'Làm mới dữ liệu'.")
             
     else:
         st.warning("⚠️ Không tìm thấy giao dịch sửa chữa lớn (SCL) nào trong các file nguồn để phân tách Trung/Hạ thế.")

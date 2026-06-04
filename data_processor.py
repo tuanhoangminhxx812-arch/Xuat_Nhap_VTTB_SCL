@@ -343,6 +343,28 @@ PROJECT_NAMES = {
 
 VOLTAGE_MAPPING_CACHE = None
 
+# ---------------------------------------------------------------------------
+# Keywords used to detect "Nhập thu hồi" (material return to warehouse)
+# ---------------------------------------------------------------------------
+THU_HOI_KEYWORDS = [
+    "thu hồi", "thu hoi", "hoàn nhập", "hoan nhap",
+    "trả lại", "tra lai", "nhập lại", "nhap lai",
+    "nhập thu hồi", "nhap thu hoi",
+    "thu hồi vttb", "thu hoi vttb",
+    "hoàn trả", "hoan tra",
+]
+
+def is_thu_hoi_desc(desc: str) -> bool:
+    """
+    Returns True if the description contains any keyword that indicates
+    a material return / recovery transaction (Nhập thu hồi).
+    Case-insensitive, accent-tolerant check.
+    """
+    if not desc:
+        return False
+    desc_lower = desc.lower()
+    return any(kw in desc_lower for kw in THU_HOI_KEYWORDS)
+
 def load_voltage_mapping(file_path="TachPP_BL mẫu.xlsx"):
     """
     Loads and caches the manual voltage level classifications from TachPP_BL mẫu.xlsx.
@@ -494,38 +516,44 @@ def generate_voltage_separation_data(import_records, export_records):
             "amount": r["amount"]
         })
         
-    # Process Imports (NHAP - SCL Returns / Thu hoi VTTB)
+    # Process Imports (NHAP)
+    # An import record is either:
+    #   - "Thu hồi"   : VTTB returned FROM the field BACK to warehouse (keywords in desc)
+    #   - "Nhập kho SCL" : New material purchased/received for an SCL project (no return keyword)
     for r in import_records:
         # Space-insensitive SCL check
         desc_clean = r["desc"].replace(" ", "").upper() if r["desc"] else ""
         voucher_clean = r["voucher"].replace(" ", "").upper() if r["voucher"] else ""
         if "SCL" not in desc_clean and "SCL" not in voucher_clean and "VTAD" not in desc_clean and "VTAD" not in voucher_clean and "VTDA" not in desc_clean and "VTDA" not in voucher_clean:
             continue
-            
+
         proj_code = clean_project_code(r["desc"])
         if not proj_code:
             proj_code = clean_project_code(r["voucher"])
-            
+
         # Fallback: if voucher contains .VH4. and it's SCL, it belongs to VTAD2606001
         if not proj_code and ".VH4." in (r["voucher"] or ""):
             proj_code = "VTAD2606001"
-            
+
         if not proj_code:
             continue
-            
+
         vol = classify_voltage(r["code"], r["name"], r["desc"])
-        
+
         # Get Month
         m = None
         if isinstance(r["date"], (datetime.datetime, datetime.date)):
             m = r["date"].month
-            
+
+        # Distinguish: Thu hồi vs Nhập kho SCL
+        row_type = "Thu hồi" if is_thu_hoi_desc(r["desc"]) else "Nhập kho SCL"
+
         rows.append({
             "tháng": m,
             "project_code": proj_code,
             "voltage": vol,
-            "row_type": "Thu hồi",    # Clearly label as return/recovery
-            "amount": r["amount"]      # Keep positive; sign handled at display/summary level
+            "row_type": row_type,
+            "amount": r["amount"]
         })
         
     df = pd.DataFrame(rows)
@@ -564,15 +592,26 @@ def write_to_voltage_template(df_grouped, template_path, output_path):
                 "number_format": cell.number_format
             }
     
-    # Build "Thu hồi" row style: orange background, italic dark text, thin border
     thin_side = Side(style='thin', color='000000')
-    thu_hoi_border = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
-    thu_hoi_fill_trung = PatternFill(fill_type='solid', fgColor='FFD580')   # amber/orange for Trung thế thu hồi
+    shared_border = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+    num_fmt = blueprints[12].get(5, {}).get('number_format', '#,##0') if blueprints[12].get(5) else '#,##0'
+
+    # --- "Thu hồi" style: amber/orange ---
+    thu_hoi_border    = shared_border
+    thu_hoi_fill_trung = PatternFill(fill_type='solid', fgColor='FFD580')   # amber for Trung thế thu hồi
     thu_hoi_fill_ha   = PatternFill(fill_type='solid', fgColor='FFB347')    # deeper orange for Hạ thế thu hồi
-    thu_hoi_font = Font(name='Times New Roman', size=11, italic=True, color='7B3F00')
-    thu_hoi_font_red = Font(name='Times New Roman', size=11, italic=True, color='C0392B', bold=True)
-    thu_hoi_align = Alignment(horizontal='center', vertical='center')
-    thu_hoi_num_fmt = blueprints[12].get(5, {}).get('number_format', '#,##0') if blueprints[12].get(5) else '#,##0'
+    thu_hoi_font      = Font(name='Times New Roman', size=11, italic=True, color='7B3F00')
+    thu_hoi_font_red  = Font(name='Times New Roman', size=11, italic=True, color='C0392B', bold=True)
+    thu_hoi_align     = Alignment(horizontal='center', vertical='center')
+    thu_hoi_num_fmt   = num_fmt
+
+    # --- "Nhập kho SCL" style: light green ---
+    nhap_kho_border      = shared_border
+    nhap_kho_fill_trung  = PatternFill(fill_type='solid', fgColor='C8E6C9')  # light green for Trung thế
+    nhap_kho_fill_ha     = PatternFill(fill_type='solid', fgColor='A5D6A7')  # slightly deeper green for Hạ thế
+    nhap_kho_font        = Font(name='Times New Roman', size=11, italic=True, color='1B5E20')
+    nhap_kho_font_green  = Font(name='Times New Roman', size=11, italic=True, color='1B5E20', bold=True)
+    nhap_kho_num_fmt     = num_fmt
             
     # Capture header styles of cells C8, B5
     c8_style = {
@@ -627,29 +666,30 @@ def write_to_voltage_template(df_grouped, template_path, output_path):
             proj_name = PROJECT_NAMES.get(proj_code, f"{proj_code} - Dự án Sửa chữa lớn")
             df_proj = df_month[df_month["project_code"] == proj_code]
             
-            # --- Check if this project has any returns this month ---
-            has_returns = "Thu hồi" in df_proj["row_type"].values if "row_type" in df_proj.columns else False
-            
-            # Calculate net amounts (Xuất - Thu hồi) per voltage for main rows
+            # --- Check which extra row types exist this month for this project ---
+            row_types_present = set(df_proj["row_type"].values) if "row_type" in df_proj.columns else set()
+            has_returns   = "Thu hồi"     in row_types_present
+            has_nhap_kho  = "Nhập kho SCL" in row_types_present
+
+            # Calculate amounts per voltage per row_type
+            def _sum_by(voltage, rtype):
+                if "row_type" not in df_proj.columns:
+                    return 0.0
+                mask = (df_proj["voltage"] == voltage) & (df_proj["row_type"] == rtype)
+                return df_proj.loc[mask, "amount"].sum()
+
             def get_net_amt(voltage):
-                df_v = df_proj[df_proj["voltage"] == voltage] if "row_type" not in df_proj.columns else None
-                if "row_type" in df_proj.columns:
-                    xuat_df = df_proj[(df_proj["voltage"] == voltage) & (df_proj["row_type"] == "Xuất")]
-                    thuhoi_df = df_proj[(df_proj["voltage"] == voltage) & (df_proj["row_type"] == "Thu hồi")]
-                    return xuat_df["amount"].sum() - thuhoi_df["amount"].sum()
-                return df_v["amount"].sum() if not df_v.empty else 0.0
-            
+                """Net = Xuất - Thu hồi  (Nhập kho SCL is NOT deducted here; shown separately)"""
+                return _sum_by(voltage, "Xuất") - _sum_by(voltage, "Thu hồi")
+
             def get_xuat_amt(voltage):
-                if "row_type" in df_proj.columns:
-                    df_v = df_proj[(df_proj["voltage"] == voltage) & (df_proj["row_type"] == "Xuất")]
-                    return df_v["amount"].sum() if not df_v.empty else 0.0
-                return 0.0
-            
+                return _sum_by(voltage, "Xuất")
+
             def get_thuhoi_amt(voltage):
-                if "row_type" in df_proj.columns:
-                    df_v = df_proj[(df_proj["voltage"] == voltage) & (df_proj["row_type"] == "Thu hồi")]
-                    return df_v["amount"].sum() if not df_v.empty else 0.0
-                return 0.0
+                return _sum_by(voltage, "Thu hồi")
+
+            def get_nhap_kho_amt(voltage):
+                return _sum_by(voltage, "Nhập kho SCL")
             
             proj_start_row = curr_row
             
@@ -704,32 +744,26 @@ def write_to_voltage_template(df_grouped, template_path, output_path):
                     if style["alignment"]: cell.alignment = style["alignment"]
                     if style["number_format"]: cell.number_format = style["number_format"]
             
-            # --- Write THU HOI rows (if any returns exist for this project this month) ---
+            # ----------------------------------------------------------------
+            # Write THU HỒI rows (amber) – material returned FROM field
+            # ----------------------------------------------------------------
             if has_returns:
-                thu_hoi_start_row = curr_row
                 for th_idx, vol in enumerate(["Trung thế", "Hạ thế"]):
                     thuhoi_amt = get_thuhoi_amt(vol)
                     if thuhoi_amt == 0.0:
-                        continue  # Skip voltage level with no returns
-                    
+                        continue
+
                     fill = thu_hoi_fill_trung if vol == "Trung thế" else thu_hoi_fill_ha
-                    
-                    # Col A: empty (part of merged project block)
+
                     sheet_month.cell(row=curr_row, column=1).value = None
-                    # Col B: label "Thu hồi VTTB" on first return row
                     sheet_month.cell(row=curr_row, column=2).value = "Thu hồi VTTB" if th_idx == 0 else None
-                    # Col C: Project Code
                     sheet_month.cell(row=curr_row, column=3).value = proj_code
-                    # Col D: Voltage Level
                     sheet_month.cell(row=curr_row, column=4).value = vol
-                    # Col E: Return amount as NEGATIVE (reduces cost)
+                    # Negative: returns REDUCE cost
                     sheet_month.cell(row=curr_row, column=5).value = -thuhoi_amt
-                    # Col F: Distribution share
                     sheet_month.cell(row=curr_row, column=6).value = f"=E{curr_row}*80.79%"
-                    # Col G: Retail share
                     sheet_month.cell(row=curr_row, column=7).value = f"=E{curr_row}-F{curr_row}"
-                    
-                    # Apply orange highlight style to all columns
+
                     for col_idx in range(1, 8):
                         cell = sheet_month.cell(row=curr_row, column=col_idx)
                         cell.fill = fill
@@ -744,9 +778,46 @@ def write_to_voltage_template(df_grouped, template_path, output_path):
                         else:
                             cell.font = thu_hoi_font
                             cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
-                    
+
                     curr_row += 1
-            
+
+            # ----------------------------------------------------------------
+            # Write NHẬP KHO SCL rows (green) – new material received for SCL
+            # ----------------------------------------------------------------
+            if has_nhap_kho:
+                for nk_idx, vol in enumerate(["Trung thế", "Hạ thế"]):
+                    nhap_amt = get_nhap_kho_amt(vol)
+                    if nhap_amt == 0.0:
+                        continue
+
+                    fill = nhap_kho_fill_trung if vol == "Trung thế" else nhap_kho_fill_ha
+
+                    sheet_month.cell(row=curr_row, column=1).value = None
+                    sheet_month.cell(row=curr_row, column=2).value = "Nhập kho SCL" if nk_idx == 0 else None
+                    sheet_month.cell(row=curr_row, column=3).value = proj_code
+                    sheet_month.cell(row=curr_row, column=4).value = vol
+                    # Positive: new stock INCREASES cost pool
+                    sheet_month.cell(row=curr_row, column=5).value = nhap_amt
+                    sheet_month.cell(row=curr_row, column=6).value = f"=E{curr_row}*80.79%"
+                    sheet_month.cell(row=curr_row, column=7).value = f"=E{curr_row}-F{curr_row}"
+
+                    for col_idx in range(1, 8):
+                        cell = sheet_month.cell(row=curr_row, column=col_idx)
+                        cell.fill = fill
+                        cell.border = nhap_kho_border
+                        if col_idx in [5, 6, 7]:
+                            cell.font = nhap_kho_font_green
+                            cell.alignment = Alignment(horizontal='right', vertical='center')
+                            cell.number_format = nhap_kho_num_fmt
+                        elif col_idx in [3, 4]:
+                            cell.font = nhap_kho_font
+                            cell.alignment = Alignment(horizontal='center', vertical='center')
+                        else:
+                            cell.font = nhap_kho_font
+                            cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+
+                    curr_row += 1
+
             stt_counter += 1
             
         # Write "Tổng cộng" Row at the end
@@ -851,21 +922,39 @@ def write_detailed_scl_classification(df_scl, template_path, output_path):
     if original_max_row >= 3:
         sheet.delete_rows(3, original_max_row - 2)
     
-    # Define orange highlight fill for Thu hồi rows
-    thu_hoi_fill = PatternFill(fill_type='solid', fgColor='FFD580')
-    thu_hoi_font = Font(name='Times New Roman', size=11, italic=True, color='7B3F00')
-        
+    # Highlight fills
+    thu_hoi_fill  = PatternFill(fill_type='solid', fgColor='FFD580')  # amber – Thu hồi
+    thu_hoi_font  = Font(name='Times New Roman', size=11, italic=True, color='7B3F00')
+    nhap_kho_fill = PatternFill(fill_type='solid', fgColor='C8E6C9')  # light green – Nhập kho SCL
+    nhap_kho_font = Font(name='Times New Roman', size=11, italic=True, color='1B5E20')
+
     # 3. Write new SCL records with classification
     if not df_scl.empty:
         for r_idx, row_dict in enumerate(df_scl.to_dict('records'), start=3):
             # Classify voltage
             vol = classify_voltage(row_dict["Mã vật tư"], row_dict["Tên vật tư"], row_dict["Diễn giải"])
-            
-            # Determine transaction type: Thu hồi if it is an import (Nhập thu hồi)
-            nhap_sl = row_dict.get("Nhập - Số lượng", 0) or 0
-            xuat_sl = row_dict.get("Xuất - Số lượng", 0) or 0
-            is_thu_hoi = (nhap_sl > 0 and xuat_sl == 0)
-            loai_gd = "Thu hồi/Nhập kho" if is_thu_hoi else "Xuất công trình"
+
+            # Determine transaction type using keyword detection
+            nhap_sl  = row_dict.get("Nhập - Số lượng", 0) or 0
+            xuat_sl  = row_dict.get("Xuất - Số lượng", 0) or 0
+            desc_val = row_dict.get("Diễn giải", "") or ""
+
+            if xuat_sl > 0:
+                loai_gd   = "Xuất công trình"
+                is_thu_hoi  = False
+                is_nhap_kho = False
+            elif nhap_sl > 0 and is_thu_hoi_desc(desc_val):
+                loai_gd   = "Thu hồi VTTB"
+                is_thu_hoi  = True
+                is_nhap_kho = False
+            elif nhap_sl > 0:
+                loai_gd   = "Nhập kho SCL"
+                is_thu_hoi  = False
+                is_nhap_kho = True
+            else:
+                loai_gd   = "Không xác định"
+                is_thu_hoi  = False
+                is_nhap_kho = False
             
             # Map dictionary keys to standard 15 columns
             col_keys = [
@@ -898,11 +987,14 @@ def write_detailed_scl_classification(df_scl, template_path, output_path):
                     if style["alignment"]: cell.alignment = style["alignment"]
                     if style["number_format"]: cell.number_format = style["number_format"]
                 
-                # Apply orange highlight for Thu hồi rows
+                # Row-level highlight based on transaction type
                 if is_thu_hoi:
                     cell.fill = thu_hoi_fill
                     cell.font = thu_hoi_font
-            
+                elif is_nhap_kho:
+                    cell.fill = nhap_kho_fill
+                    cell.font = nhap_kho_font
+
             # Write Column P (PHÂN LOẠI - Trung/Hạ thế)
             cell_p = sheet.cell(row=r_idx, column=16)
             cell_p.value = vol
@@ -916,7 +1008,10 @@ def write_detailed_scl_classification(df_scl, template_path, output_path):
             if is_thu_hoi:
                 cell_p.fill = thu_hoi_fill
                 cell_p.font = thu_hoi_font
-            
+            elif is_nhap_kho:
+                cell_p.fill = nhap_kho_fill
+                cell_p.font = nhap_kho_font
+
             # Write Column Q (Loại giao dịch)
             cell_q = sheet.cell(row=r_idx, column=17)
             cell_q.value = loai_gd
@@ -930,6 +1025,9 @@ def write_detailed_scl_classification(df_scl, template_path, output_path):
             if is_thu_hoi:
                 cell_q.fill = thu_hoi_fill
                 cell_q.font = Font(name='Times New Roman', size=11, italic=True, bold=True, color='C0392B')
+            elif is_nhap_kho:
+                cell_q.fill = nhap_kho_fill
+                cell_q.font = Font(name='Times New Roman', size=11, italic=True, bold=True, color='1B5E20')
             else:
                 cell_q.font = Font(name='Times New Roman', size=11, color='1A5276')
                 
