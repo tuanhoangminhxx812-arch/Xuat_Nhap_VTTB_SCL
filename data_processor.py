@@ -343,28 +343,6 @@ PROJECT_NAMES = {
 
 VOLTAGE_MAPPING_CACHE = None
 
-# ---------------------------------------------------------------------------
-# Keywords used to detect "Nhập thu hồi" (material return to warehouse)
-# ---------------------------------------------------------------------------
-THU_HOI_KEYWORDS = [
-    "thu hồi", "thu hoi", "hoàn nhập", "hoan nhap",
-    "trả lại", "tra lai", "nhập lại", "nhap lai",
-    "nhập thu hồi", "nhap thu hoi",
-    "thu hồi vttb", "thu hoi vttb",
-    "hoàn trả", "hoan tra",
-]
-
-def is_thu_hoi_desc(desc: str) -> bool:
-    """
-    Returns True if the description contains any keyword that indicates
-    a material return / recovery transaction (Nhập thu hồi).
-    Case-insensitive, accent-tolerant check.
-    """
-    if not desc:
-        return False
-    desc_lower = desc.lower()
-    return any(kw in desc_lower for kw in THU_HOI_KEYWORDS)
-
 def load_voltage_mapping(file_path="TachPP_BL mẫu.xlsx"):
     """
     Loads and caches the manual voltage level classifications from TachPP_BL mẫu.xlsx.
@@ -421,19 +399,8 @@ def classify_voltage(code, name, desc):
     if code_str.startswith(("3.53.60", "3.53.65", "3.56")):
         return "Trung thế"
         
-    # FCO (Cầu chì tự rơi) và LBFCO: 3.30.22, 3.30.88 -> Trung thế
-    # Fuse Link (Dây chì FCO trung thế): 3.30.92 -> Trung thế
-    if code_str.startswith(("3.30.22", "3.30.88", "3.30.92")):
-        return "Trung thế"
-        
-    # Chống sét van (LA) và phụ kiện trung thế: 3.42.80, 3.42.90 -> Trung thế
-    if code_str.startswith(("3.42.80", "3.42.90")):
-        return "Trung thế"
-        
-    # Voltage transformer voltage ratings (22kV, 12kV, 15kV, 18kV, 27kV...)
-    mv_indicators = ["24KV", "22KV", "18KV", "15KV", "27KV", "12KV", "110KV", "35KV",
-                     "TRUNG THẾ", "TRUNG THÊ", "22:√3", "12000/120V", "22(15):V3",
-                     "FCO", "FUSE LINK", "CHỐNG SÉT VAN", "CHONG SET VAN"]
+    # Voltage transformer voltage ratings (22kV, 12kV...)
+    mv_indicators = ["24KV", "22KV", "12KV", "110KV", "35KV", "TRUNG THẾ", "TRUNG THÊ", "22:√3", "12000/120V", "22(15):V3"]
     if any(k in name_upper or k in desc_upper for k in mv_indicators):
         return "Trung thế"
         
@@ -476,9 +443,9 @@ def clean_project_code(desc):
 def generate_voltage_separation_data(import_records, export_records):
     """
     Filters SCL records, separates them by Low/Medium Voltage, 
-    standardizes SCL project names, aggregates amounts by Month, Project Code, Voltage, and Row Type.
-    Row Type: "Xuất" (exports to project) or "Thu hồi" (returns/recoveries from field).
-    Returns a DataFrame with columns: tháng, project_code, voltage, row_type, amount.
+    standardizes SCL project names, aggregates amounts by Month, Project Code, and Voltage.
+    Subtracts SCL returns (Imports SCL returns) from exports.
+    Returns a DataFrame.
     """
     rows = []
     
@@ -512,68 +479,57 @@ def generate_voltage_separation_data(import_records, export_records):
             "tháng": m,
             "project_code": proj_code,
             "voltage": vol,
-            "row_type": "Xuất",
             "amount": r["amount"]
         })
         
-    # Process Imports (NHAP)
-    # An import record is either:
-    #   - "Thu hồi"   : VTTB returned FROM the field BACK to warehouse (keywords in desc)
-    #   - "Nhập kho SCL" : New material purchased/received for an SCL project (no return keyword)
+    # Process Imports (NHAP - SCL Returns)
     for r in import_records:
         # Space-insensitive SCL check
         desc_clean = r["desc"].replace(" ", "").upper() if r["desc"] else ""
         voucher_clean = r["voucher"].replace(" ", "").upper() if r["voucher"] else ""
         if "SCL" not in desc_clean and "SCL" not in voucher_clean and "VTAD" not in desc_clean and "VTAD" not in voucher_clean and "VTDA" not in desc_clean and "VTDA" not in voucher_clean:
             continue
-
+            
         proj_code = clean_project_code(r["desc"])
         if not proj_code:
             proj_code = clean_project_code(r["voucher"])
-
+            
         # Fallback: if voucher contains .VH4. and it's SCL, it belongs to VTAD2606001
         if not proj_code and ".VH4." in (r["voucher"] or ""):
             proj_code = "VTAD2606001"
-
+            
         if not proj_code:
             continue
-
+            
         vol = classify_voltage(r["code"], r["name"], r["desc"])
-
+        
         # Get Month
         m = None
         if isinstance(r["date"], (datetime.datetime, datetime.date)):
             m = r["date"].month
-
-        # Distinguish: Thu hồi vs Nhập kho SCL
-        row_type = "Thu hồi" if is_thu_hoi_desc(r["desc"]) else "Nhập kho SCL"
-
+            
         rows.append({
             "tháng": m,
             "project_code": proj_code,
             "voltage": vol,
-            "row_type": row_type,
-            "amount": r["amount"]
+            "amount": -r["amount"] # Subtract return amount
         })
         
     df = pd.DataFrame(rows)
     if df.empty:
-        return pd.DataFrame(columns=["tháng", "project_code", "voltage", "row_type", "amount"])
+        return pd.DataFrame(columns=["tháng", "project_code", "voltage", "amount"])
         
-    # Group by Month, Project Code, Voltage Level, and Row Type, then sum amounts
-    df_grouped = df.groupby(["tháng", "project_code", "voltage", "row_type"])["amount"].sum().reset_index()
+    # Group by Month, Project Code, and Voltage Level, and sum amounts
+    df_grouped = df.groupby(["tháng", "project_code", "voltage"])["amount"].sum().reset_index()
     return df_grouped
 
 def write_to_voltage_template(df_grouped, template_path, output_path):
     """
     Generates a multi-sheet Excel workbook based on Tách PP-BL.xlsx template.
     Creates a worksheet for each month present, writes project voltage separation lines,
-    including separate rows for "Thu hồi VTTB" (returns/recoveries) highlighted in orange.
-    Inserts live Excel formulas, and cell-by-cell copies all font styles, colors, and borders
+    inserts live Excel formulas, and cell-by-cell copies all font styles, colors, and borders
     from blueprints of rows 12, 13, and 14 in the template.
     """
-    from openpyxl.styles import PatternFill, Font, Border, Side, Alignment
-    
     wb_template = openpyxl.load_workbook(template_path, data_only=False)
     sheet_blueprint = wb_template.active # Sheet1 acts as blueprint
     blueprint_name = sheet_blueprint.title
@@ -591,27 +547,6 @@ def write_to_voltage_template(df_grouped, template_path, output_path):
                 "alignment": copy(cell.alignment) if cell.alignment else None,
                 "number_format": cell.number_format
             }
-    
-    thin_side = Side(style='thin', color='000000')
-    shared_border = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
-    num_fmt = blueprints[12].get(5, {}).get('number_format', '#,##0') if blueprints[12].get(5) else '#,##0'
-
-    # --- "Thu hồi" style: amber/orange ---
-    thu_hoi_border    = shared_border
-    thu_hoi_fill_trung = PatternFill(fill_type='solid', fgColor='FFD580')   # amber for Trung thế thu hồi
-    thu_hoi_fill_ha   = PatternFill(fill_type='solid', fgColor='FFB347')    # deeper orange for Hạ thế thu hồi
-    thu_hoi_font      = Font(name='Times New Roman', size=11, italic=True, color='7B3F00')
-    thu_hoi_font_red  = Font(name='Times New Roman', size=11, italic=True, color='C0392B', bold=True)
-    thu_hoi_align     = Alignment(horizontal='center', vertical='center')
-    thu_hoi_num_fmt   = num_fmt
-
-    # --- "Nhập kho SCL" style: light green ---
-    nhap_kho_border      = shared_border
-    nhap_kho_fill_trung  = PatternFill(fill_type='solid', fgColor='C8E6C9')  # light green for Trung thế
-    nhap_kho_fill_ha     = PatternFill(fill_type='solid', fgColor='A5D6A7')  # slightly deeper green for Hạ thế
-    nhap_kho_font        = Font(name='Times New Roman', size=11, italic=True, color='1B5E20')
-    nhap_kho_font_green  = Font(name='Times New Roman', size=11, italic=True, color='1B5E20', bold=True)
-    nhap_kho_num_fmt     = num_fmt
             
     # Capture header styles of cells C8, B5
     c8_style = {
@@ -666,36 +601,12 @@ def write_to_voltage_template(df_grouped, template_path, output_path):
             proj_name = PROJECT_NAMES.get(proj_code, f"{proj_code} - Dự án Sửa chữa lớn")
             df_proj = df_month[df_month["project_code"] == proj_code]
             
-            # --- Check which extra row types exist this month for this project ---
-            row_types_present = set(df_proj["row_type"].values) if "row_type" in df_proj.columns else set()
-            has_returns   = "Thu hồi"     in row_types_present
-            has_nhap_kho  = "Nhập kho SCL" in row_types_present
-
-            # Calculate amounts per voltage per row_type
-            def _sum_by(voltage, rtype):
-                if "row_type" not in df_proj.columns:
-                    return 0.0
-                mask = (df_proj["voltage"] == voltage) & (df_proj["row_type"] == rtype)
-                return df_proj.loc[mask, "amount"].sum()
-
-            def get_net_amt(voltage):
-                """Net = Xuất - Thu hồi  (Nhập kho SCL is NOT deducted here; shown separately)"""
-                return _sum_by(voltage, "Xuất") - _sum_by(voltage, "Thu hồi")
-
-            def get_xuat_amt(voltage):
-                return _sum_by(voltage, "Xuất")
-
-            def get_thuhoi_amt(voltage):
-                return _sum_by(voltage, "Thu hồi")
-
-            def get_nhap_kho_amt(voltage):
-                return _sum_by(voltage, "Nhập kho SCL")
-            
             proj_start_row = curr_row
             
-            # --- Write MAIN rows: Trung thế and Hạ thế (Net = Xuất - Thu hồi) ---
+            # Write both Medium and Low voltage rows for each project
             for v_idx, vol in enumerate(["Trung thế", "Hạ thế"]):
-                net_amt = get_net_amt(vol)
+                df_vol = df_proj[df_proj["voltage"] == vol]
+                amt_val = df_vol["amount"].sum() if not df_vol.empty else 0.0
                 
                 # Column A: STT (Only on first row of project)
                 sheet_month.cell(row=curr_row, column=1).value = stt_counter if v_idx == 0 else None
@@ -705,8 +616,8 @@ def write_to_voltage_template(df_grouped, template_path, output_path):
                 sheet_month.cell(row=curr_row, column=3).value = proj_code
                 # Column D: Voltage Level
                 sheet_month.cell(row=curr_row, column=4).value = vol
-                # Column E: Net Cost (Xuất - Thu hồi)
-                sheet_month.cell(row=curr_row, column=5).value = net_amt
+                # Column E: Total Cost
+                sheet_month.cell(row=curr_row, column=5).value = amt_val
                 
                 # Column F: Distribution share formula (=E{row}*80.79%)
                 sheet_month.cell(row=curr_row, column=6).value = f"=E{curr_row}*80.79%"
@@ -727,15 +638,14 @@ def write_to_voltage_template(df_grouped, template_path, output_path):
                         if style["number_format"]: cell.number_format = style["number_format"]
                         
                 curr_row += 1
-            
-            # Merge STT (Col A) and Project Name (Col B) for the 2 main rows
-            merge_end = curr_row - 1  # row of Hạ thế net line
-            sheet_month.merge_cells(start_row=proj_start_row, start_column=1, end_row=merge_end, end_column=1)
-            sheet_month.merge_cells(start_row=proj_start_row, start_column=2, end_row=merge_end, end_column=2)
+                
+            # Merge STT (Col A) and Project Name (Col B) for the project rows (Medium and Low Voltage)
+            sheet_month.merge_cells(start_row=proj_start_row, start_column=1, end_row=proj_start_row+1, end_column=1)
+            sheet_month.merge_cells(start_row=proj_start_row, start_column=2, end_row=proj_start_row+1, end_column=2)
             
             # Re-apply styling for Col A and B bottom cells to keep borders and fill consistent
             for col_idx in [1, 2]:
-                cell = sheet_month.cell(row=merge_end, column=col_idx)
+                cell = sheet_month.cell(row=proj_start_row+1, column=col_idx)
                 style = blueprints[13].get(col_idx)
                 if style:
                     if style["font"]: cell.font = style["font"]
@@ -744,80 +654,6 @@ def write_to_voltage_template(df_grouped, template_path, output_path):
                     if style["alignment"]: cell.alignment = style["alignment"]
                     if style["number_format"]: cell.number_format = style["number_format"]
             
-            # ----------------------------------------------------------------
-            # Write THU HỒI rows (amber) – material returned FROM field
-            # ----------------------------------------------------------------
-            if has_returns:
-                for th_idx, vol in enumerate(["Trung thế", "Hạ thế"]):
-                    thuhoi_amt = get_thuhoi_amt(vol)
-                    if thuhoi_amt == 0.0:
-                        continue
-
-                    fill = thu_hoi_fill_trung if vol == "Trung thế" else thu_hoi_fill_ha
-
-                    sheet_month.cell(row=curr_row, column=1).value = None
-                    sheet_month.cell(row=curr_row, column=2).value = "Thu hồi VTTB" if th_idx == 0 else None
-                    sheet_month.cell(row=curr_row, column=3).value = proj_code
-                    sheet_month.cell(row=curr_row, column=4).value = vol
-                    # Negative: returns REDUCE cost
-                    sheet_month.cell(row=curr_row, column=5).value = -thuhoi_amt
-                    sheet_month.cell(row=curr_row, column=6).value = f"=E{curr_row}*80.79%"
-                    sheet_month.cell(row=curr_row, column=7).value = f"=E{curr_row}-F{curr_row}"
-
-                    for col_idx in range(1, 8):
-                        cell = sheet_month.cell(row=curr_row, column=col_idx)
-                        cell.fill = fill
-                        cell.border = thu_hoi_border
-                        if col_idx in [5, 6, 7]:
-                            cell.font = thu_hoi_font_red
-                            cell.alignment = Alignment(horizontal='right', vertical='center')
-                            cell.number_format = thu_hoi_num_fmt
-                        elif col_idx in [3, 4]:
-                            cell.font = thu_hoi_font
-                            cell.alignment = Alignment(horizontal='center', vertical='center')
-                        else:
-                            cell.font = thu_hoi_font
-                            cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
-
-                    curr_row += 1
-
-            # ----------------------------------------------------------------
-            # Write NHẬP KHO SCL rows (green) – new material received for SCL
-            # ----------------------------------------------------------------
-            if has_nhap_kho:
-                for nk_idx, vol in enumerate(["Trung thế", "Hạ thế"]):
-                    nhap_amt = get_nhap_kho_amt(vol)
-                    if nhap_amt == 0.0:
-                        continue
-
-                    fill = nhap_kho_fill_trung if vol == "Trung thế" else nhap_kho_fill_ha
-
-                    sheet_month.cell(row=curr_row, column=1).value = None
-                    sheet_month.cell(row=curr_row, column=2).value = "Nhập kho SCL" if nk_idx == 0 else None
-                    sheet_month.cell(row=curr_row, column=3).value = proj_code
-                    sheet_month.cell(row=curr_row, column=4).value = vol
-                    # Positive: new stock INCREASES cost pool
-                    sheet_month.cell(row=curr_row, column=5).value = nhap_amt
-                    sheet_month.cell(row=curr_row, column=6).value = f"=E{curr_row}*80.79%"
-                    sheet_month.cell(row=curr_row, column=7).value = f"=E{curr_row}-F{curr_row}"
-
-                    for col_idx in range(1, 8):
-                        cell = sheet_month.cell(row=curr_row, column=col_idx)
-                        cell.fill = fill
-                        cell.border = nhap_kho_border
-                        if col_idx in [5, 6, 7]:
-                            cell.font = nhap_kho_font_green
-                            cell.alignment = Alignment(horizontal='right', vertical='center')
-                            cell.number_format = nhap_kho_num_fmt
-                        elif col_idx in [3, 4]:
-                            cell.font = nhap_kho_font
-                            cell.alignment = Alignment(horizontal='center', vertical='center')
-                        else:
-                            cell.font = nhap_kho_font
-                            cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
-
-                    curr_row += 1
-
             stt_counter += 1
             
         # Write "Tổng cộng" Row at the end
@@ -830,7 +666,7 @@ def write_to_voltage_template(df_grouped, template_path, output_path):
         # Merge A{tot_row}:D{tot_row}
         sheet_month.merge_cells(start_row=tot_row, start_column=1, end_row=tot_row, end_column=4)
         
-        # Formulas for Totals (SUM of all data rows including thu hồi negatives)
+        # Formulas for Totals
         end_data_row = tot_row - 1
         sheet_month.cell(row=tot_row, column=5).value = f"=SUM(E12:E{end_data_row})"
         sheet_month.cell(row=tot_row, column=6).value = f"=SUM(F12:F{end_data_row})"
@@ -848,7 +684,7 @@ def write_to_voltage_template(df_grouped, template_path, output_path):
                 if style["alignment"]: cell.alignment = style["alignment"]
                 if style["number_format"]: cell.number_format = style["number_format"]
                 
-        # Write sum formula to C8 (tong cong cuoi trang)
+        # Write sum formula to C8
         c8_cell = sheet_month.cell(row=8, column=3)
         c8_cell.value = f"=E{tot_row}"
         # Apply styling to C8
@@ -866,15 +702,10 @@ def write_to_voltage_template(df_grouped, template_path, output_path):
 
 def write_detailed_scl_classification(df_scl, template_path, output_path):
     """
-    Generates a detailed SCL transaction file with classification columns P and Q.
-    Column P: Trung/Hạ thế classification.
-    Column Q: Loại giao dịch - "Xuất" or "Thu hồi/Nhập kho" to clearly identify return transactions.
+    Generates a detailed SCL transaction file with classification column P.
     Loads standard Xuat_Nhap(mau).xlsx template, clears old rows, writes all SCL
-    transactions chronologically, applies blueprint styling.
-    Return rows (Nhập = Nhập thu hồi) are highlighted with a light orange background.
+    transactions chronologically, applies blueprint styling, and appends the 16th column "PHÂN LOẠI".
     """
-    from openpyxl.styles import PatternFill, Font
-    
     wb = openpyxl.load_workbook(template_path)
     sheet = wb.active
     
@@ -890,71 +721,37 @@ def write_detailed_scl_classification(df_scl, template_path, output_path):
             "number_format": cell.number_format
         }
         
-    # Column P (16) style: copy from Column O (15), center aligned
+    # Column P style will copy style blueprint from Column O (15)
     style_blueprint[16] = copy(style_blueprint[15])
+    # Set column P alignment to center
     if style_blueprint[16]["alignment"]:
         align = copy(style_blueprint[16]["alignment"])
         align.horizontal = "center"
         style_blueprint[16]["alignment"] = align
-    
-    # Column Q (17) style: copy from Column P, also center aligned
-    style_blueprint[17] = copy(style_blueprint[16])
         
     # Write headers for Column P
     sheet.cell(row=1, column=16).value = "Trung/Hạ thế"
     sheet.cell(row=2, column=16).value = "PHÂN LOẠI"
-    # Write headers for Column Q
-    sheet.cell(row=1, column=17).value = "Loại giao dịch"
-    sheet.cell(row=2, column=17).value = "XUẤT / THU HỒI"
     
-    # Apply header style from O1/O2 to P1/P2 and Q1/Q2
+    # Apply header style from O1/O2 to P1/P2
     for r_num in [1, 2]:
         cell_src = sheet.cell(row=r_num, column=15)
-        for dest_col in [16, 17]:
-            cell_dest = sheet.cell(row=r_num, column=dest_col)
-            cell_dest.font = copy(cell_src.font) if cell_src.font else None
-            cell_dest.fill = copy(cell_src.fill) if cell_src.fill else None
-            cell_dest.border = copy(cell_src.border) if cell_src.border else None
-            cell_dest.alignment = copy(cell_src.alignment) if cell_src.alignment else None
+        cell_dest = sheet.cell(row=r_num, column=16)
+        cell_dest.font = copy(cell_src.font) if cell_src.font else None
+        cell_dest.fill = copy(cell_src.fill) if cell_src.fill else None
+        cell_dest.border = copy(cell_src.border) if cell_src.border else None
+        cell_dest.alignment = copy(cell_src.alignment) if cell_src.alignment else None
         
     # 2. Clear old rows (starting at row 3)
     original_max_row = sheet.max_row
     if original_max_row >= 3:
         sheet.delete_rows(3, original_max_row - 2)
-    
-    # Highlight fills
-    thu_hoi_fill  = PatternFill(fill_type='solid', fgColor='FFD580')  # amber – Thu hồi
-    thu_hoi_font  = Font(name='Times New Roman', size=11, italic=True, color='7B3F00')
-    nhap_kho_fill = PatternFill(fill_type='solid', fgColor='C8E6C9')  # light green – Nhập kho SCL
-    nhap_kho_font = Font(name='Times New Roman', size=11, italic=True, color='1B5E20')
-
+        
     # 3. Write new SCL records with classification
     if not df_scl.empty:
         for r_idx, row_dict in enumerate(df_scl.to_dict('records'), start=3):
             # Classify voltage
             vol = classify_voltage(row_dict["Mã vật tư"], row_dict["Tên vật tư"], row_dict["Diễn giải"])
-
-            # Determine transaction type using keyword detection
-            nhap_sl  = row_dict.get("Nhập - Số lượng", 0) or 0
-            xuat_sl  = row_dict.get("Xuất - Số lượng", 0) or 0
-            desc_val = row_dict.get("Diễn giải", "") or ""
-
-            if xuat_sl > 0:
-                loai_gd   = "Xuất công trình"
-                is_thu_hoi  = False
-                is_nhap_kho = False
-            elif nhap_sl > 0 and is_thu_hoi_desc(desc_val):
-                loai_gd   = "Thu hồi VTTB"
-                is_thu_hoi  = True
-                is_nhap_kho = False
-            elif nhap_sl > 0:
-                loai_gd   = "Nhập kho SCL"
-                is_thu_hoi  = False
-                is_nhap_kho = True
-            else:
-                loai_gd   = "Không xác định"
-                is_thu_hoi  = False
-                is_nhap_kho = False
             
             # Map dictionary keys to standard 15 columns
             col_keys = [
@@ -986,16 +783,8 @@ def write_detailed_scl_classification(df_scl, template_path, output_path):
                     if style["border"]: cell.border = style["border"]
                     if style["alignment"]: cell.alignment = style["alignment"]
                     if style["number_format"]: cell.number_format = style["number_format"]
-                
-                # Row-level highlight based on transaction type
-                if is_thu_hoi:
-                    cell.fill = thu_hoi_fill
-                    cell.font = thu_hoi_font
-                elif is_nhap_kho:
-                    cell.fill = nhap_kho_fill
-                    cell.font = nhap_kho_font
-
-            # Write Column P (PHÂN LOẠI - Trung/Hạ thế)
+            
+            # Write Column P (PHÂN LOẠI)
             cell_p = sheet.cell(row=r_idx, column=16)
             cell_p.value = vol
             style_p = style_blueprint.get(16)
@@ -1004,32 +793,7 @@ def write_detailed_scl_classification(df_scl, template_path, output_path):
                 if style_p["fill"]: cell_p.fill = style_p["fill"]
                 if style_p["border"]: cell_p.border = style_p["border"]
                 if style_p["alignment"]: cell_p.alignment = style_p["alignment"]
-                cell_p.number_format = "@"
-            if is_thu_hoi:
-                cell_p.fill = thu_hoi_fill
-                cell_p.font = thu_hoi_font
-            elif is_nhap_kho:
-                cell_p.fill = nhap_kho_fill
-                cell_p.font = nhap_kho_font
-
-            # Write Column Q (Loại giao dịch)
-            cell_q = sheet.cell(row=r_idx, column=17)
-            cell_q.value = loai_gd
-            style_q = style_blueprint.get(17)
-            if style_q:
-                if style_q["font"]: cell_q.font = style_q["font"]
-                if style_q["fill"]: cell_q.fill = style_q["fill"]
-                if style_q["border"]: cell_q.border = style_q["border"]
-                if style_q["alignment"]: cell_q.alignment = style_q["alignment"]
-                cell_q.number_format = "@"
-            if is_thu_hoi:
-                cell_q.fill = thu_hoi_fill
-                cell_q.font = Font(name='Times New Roman', size=11, italic=True, bold=True, color='C0392B')
-            elif is_nhap_kho:
-                cell_q.fill = nhap_kho_fill
-                cell_q.font = Font(name='Times New Roman', size=11, italic=True, bold=True, color='1B5E20')
-            else:
-                cell_q.font = Font(name='Times New Roman', size=11, color='1A5276')
+                if style_p["number_format"]: cell_p.number_format = "@"
                 
     wb.save(output_path)
     return len(df_scl)
@@ -1037,9 +801,12 @@ def write_detailed_scl_classification(df_scl, template_path, output_path):
 def parse_pm_092(file_path):
     """
     Parses PM_092.xlsx (Subledger Account Book for Account 2413).
-    Extracts transaction dates and aggregates Debit (Nợ) and Credit (Có)
-    sums for each SCL project code found, grouped by transaction month.
-    Returns a dict: {project_code: {month_num: {"debit": sum_debit, "credit": sum_credit, "net": net_sum}}}
+    Supports both single-month and multi-month files.
+    Groups transactions by project code AND month (based on actual transaction dates).
+    Returns a dict: {project_code: {"month": latest_month, "debit": total_debit, "credit": total_credit, "net": total_net,
+                      "by_month": {month_num: {"debit": sum, "credit": sum, "net": sum}}}}
+    The top-level "month"/"debit"/"credit"/"net" are kept for backward compatibility and represent
+    the cumulative totals across all months. The "by_month" sub-dict allows per-month reconciliation.
     """
     if isinstance(file_path, str) and not os.path.exists(file_path):
         return {}
@@ -1048,7 +815,21 @@ def parse_pm_092(file_path):
         wb = openpyxl.load_workbook(file_path, data_only=True)
         ws = wb.active
         
+        # 1. Parse end-month from Row 8 header for backward compatibility
+        # Format example: "Từ ngày: 01-05-2026 đến ngày 31-05-2026"
+        #            or:  "Từ ngày: 01-01-2026 đến ngày 26-06-2026"
+        header_month = None
+        row8_val = ws.cell(row=8, column=1).value
+        if row8_val:
+            match = re.search(r'đến ngày \d{2}-(\d{2})-\d{4}', str(row8_val))
+            if match:
+                header_month = int(match.group(1))
+                
+        if not header_month:
+            header_month = datetime.datetime.now().month
+            
         current_project = None
+        # Nested structure: {project_code: {"by_month": {month: {"debit":0, "credit":0, "net":0}}, "debit":0, "credit":0, "net":0, "month": header_month}}
         project_data = {}
         
         for r in range(12, ws.max_row + 1):
@@ -1058,47 +839,41 @@ def parse_pm_092(file_path):
             if cell_a and "Công trình:" in str(cell_a):
                 current_project = str(cell_a).split("Công trình:")[1].strip().split("-")[0].strip()
                 if current_project not in project_data:
-                    project_data[current_project] = {}
+                    project_data[current_project] = {
+                        "month": header_month,
+                        "debit": 0.0, "credit": 0.0, "net": 0.0,
+                        "by_month": {}
+                    }
                 continue
                 
             # Detect Detail row (contains date in Column 2)
             date_val = ws.cell(row=r, column=2).value
-            m_num = None
             if isinstance(date_val, (datetime.datetime, datetime.date)):
-                m_num = date_val.month
-            elif isinstance(date_val, (int, float)):
-                try:
-                    dt = datetime.datetime(1899, 12, 30) + datetime.timedelta(days=date_val)
-                    m_num = dt.month
-                except:
-                    pass
-            elif date_val:
-                date_str = str(date_val).strip("'\" \t")
-                # Try YYYY-MM-DD
-                m = re.search(r'\d{4}-(\d{2})-\d{2}', date_str)
-                if m:
-                    m_num = int(m.group(1))
-                else:
-                    # Try DD/MM/YYYY or DD-MM-YYYY
-                    m = re.search(r'\d{2}[-/](\d{2})[-/]\d{4}', date_str)
-                    if m:
-                        m_num = int(m.group(1))
-            
-            if m_num is not None:
-                debit = ws.cell(row=r, column=5).value or 0.0
-                credit = ws.cell(row=r, column=6).value or 0.0
+                debit = clean_numeric(ws.cell(row=r, column=5).value or 0.0)
+                credit = clean_numeric(ws.cell(row=r, column=6).value or 0.0)
                 
                 if current_project:
-                    if m_num not in project_data[current_project]:
-                        project_data[current_project][m_num] = {"debit": 0.0, "credit": 0.0, "net": 0.0}
-                    project_data[current_project][m_num]["debit"] += clean_numeric(debit)
-                    project_data[current_project][m_num]["credit"] += clean_numeric(credit)
+                    # Determine month from the actual transaction date
+                    txn_month = date_val.month
                     
-        # Calculate Net for each project and month
+                    # Accumulate into per-month buckets
+                    if txn_month not in project_data[current_project]["by_month"]:
+                        project_data[current_project]["by_month"][txn_month] = {"debit": 0.0, "credit": 0.0, "net": 0.0}
+                    
+                    project_data[current_project]["by_month"][txn_month]["debit"] += debit
+                    project_data[current_project]["by_month"][txn_month]["credit"] += credit
+                    
+                    # Also accumulate into cumulative totals
+                    project_data[current_project]["debit"] += debit
+                    project_data[current_project]["credit"] += credit
+                    
+        # Calculate Net values
         for proj in project_data:
-            for m_num in project_data[proj]:
-                project_data[proj][m_num]["net"] = project_data[proj][m_num]["debit"] - project_data[proj][m_num]["credit"]
-                
+            project_data[proj]["net"] = project_data[proj]["debit"] - project_data[proj]["credit"]
+            for m in project_data[proj]["by_month"]:
+                bm = project_data[proj]["by_month"][m]
+                bm["net"] = bm["debit"] - bm["credit"]
+            
         return project_data
     except Exception as e:
         print(f"Error parsing PM_092: {e}", file=sys.stderr)
