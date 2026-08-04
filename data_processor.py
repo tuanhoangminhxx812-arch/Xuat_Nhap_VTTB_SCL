@@ -801,9 +801,12 @@ def write_detailed_scl_classification(df_scl, template_path, output_path):
 def parse_pm_092(file_path):
     """
     Parses PM_092.xlsx (Subledger Account Book for Account 2413).
-    Extracts the month from row 8, and aggregates Debit (Nợ) and Credit (Có)
-    sums for each SCL project code found (e.g. VTAD2606001, VTAD2606002, VTAD2605001).
-    Returns a dict: {project_code: {"month": month_num, "debit": sum_debit, "credit": sum_credit, "net": net_sum}}
+    Supports both single-month and multi-month files.
+    Groups transactions by project code AND month (based on actual transaction dates).
+    Returns a dict: {project_code: {"month": latest_month, "debit": total_debit, "credit": total_credit, "net": total_net,
+                      "by_month": {month_num: {"debit": sum, "credit": sum, "net": sum}}}}
+    The top-level "month"/"debit"/"credit"/"net" are kept for backward compatibility and represent
+    the cumulative totals across all months. The "by_month" sub-dict allows per-month reconciliation.
     """
     if isinstance(file_path, str) and not os.path.exists(file_path):
         return {}
@@ -812,20 +815,21 @@ def parse_pm_092(file_path):
         wb = openpyxl.load_workbook(file_path, data_only=True)
         ws = wb.active
         
-        # 1. Parse Month from Row 8
+        # 1. Parse end-month from Row 8 header for backward compatibility
         # Format example: "Từ ngày: 01-05-2026 đến ngày 31-05-2026"
-        month_num = None
+        #            or:  "Từ ngày: 01-01-2026 đến ngày 26-06-2026"
+        header_month = None
         row8_val = ws.cell(row=8, column=1).value
         if row8_val:
             match = re.search(r'đến ngày \d{2}-(\d{2})-\d{4}', str(row8_val))
             if match:
-                month_num = int(match.group(1))
+                header_month = int(match.group(1))
                 
-        if not month_num:
-            # Fallback to May (5) since the current file is May
-            month_num = 5
+        if not header_month:
+            header_month = datetime.datetime.now().month
             
         current_project = None
+        # Nested structure: {project_code: {"by_month": {month: {"debit":0, "credit":0, "net":0}}, "debit":0, "credit":0, "net":0, "month": header_month}}
         project_data = {}
         
         for r in range(12, ws.max_row + 1):
@@ -835,22 +839,40 @@ def parse_pm_092(file_path):
             if cell_a and "Công trình:" in str(cell_a):
                 current_project = str(cell_a).split("Công trình:")[1].strip().split("-")[0].strip()
                 if current_project not in project_data:
-                    project_data[current_project] = {"month": month_num, "debit": 0.0, "credit": 0.0, "net": 0.0}
+                    project_data[current_project] = {
+                        "month": header_month,
+                        "debit": 0.0, "credit": 0.0, "net": 0.0,
+                        "by_month": {}
+                    }
                 continue
                 
             # Detect Detail row (contains date in Column 2)
             date_val = ws.cell(row=r, column=2).value
             if isinstance(date_val, (datetime.datetime, datetime.date)):
-                debit = ws.cell(row=r, column=5).value or 0.0
-                credit = ws.cell(row=r, column=6).value or 0.0
+                debit = clean_numeric(ws.cell(row=r, column=5).value or 0.0)
+                credit = clean_numeric(ws.cell(row=r, column=6).value or 0.0)
                 
                 if current_project:
-                    project_data[current_project]["debit"] += clean_numeric(debit)
-                    project_data[current_project]["credit"] += clean_numeric(credit)
+                    # Determine month from the actual transaction date
+                    txn_month = date_val.month
                     
-        # Calculate Net
+                    # Accumulate into per-month buckets
+                    if txn_month not in project_data[current_project]["by_month"]:
+                        project_data[current_project]["by_month"][txn_month] = {"debit": 0.0, "credit": 0.0, "net": 0.0}
+                    
+                    project_data[current_project]["by_month"][txn_month]["debit"] += debit
+                    project_data[current_project]["by_month"][txn_month]["credit"] += credit
+                    
+                    # Also accumulate into cumulative totals
+                    project_data[current_project]["debit"] += debit
+                    project_data[current_project]["credit"] += credit
+                    
+        # Calculate Net values
         for proj in project_data:
             project_data[proj]["net"] = project_data[proj]["debit"] - project_data[proj]["credit"]
+            for m in project_data[proj]["by_month"]:
+                bm = project_data[proj]["by_month"][m]
+                bm["net"] = bm["debit"] - bm["credit"]
             
         return project_data
     except Exception as e:

@@ -31,8 +31,8 @@ from data_processor import (
 )
 
 # Default File Paths in the Workspace Directory
-DEFAULT_IMPORT = "INV-007Atừ 01012026 đến 31052026.xlsx"
-DEFAULT_EXPORT = "INV-009 từ 01012026 đến 31052026.xlsx"
+DEFAULT_IMPORT = "INV007A-01.01.26-30.06.26.xlsx"
+DEFAULT_EXPORT = "INV009A-01.01.26-30.06.26.xlsx"
 DEFAULT_TEMPLATE = "Xuat_Nhap(mau).xlsx"
 DEFAULT_OUTPUT = "Xuat_Nhap_TongHop.xlsx"
 
@@ -471,8 +471,8 @@ with tab2:
         if uploaded_pm092 is not None:
             pm092_file = uploaded_pm092
             pm092_exists = True
-        elif os.path.exists("PM_092.xlsx"):
-            pm092_file = "PM_092.xlsx"
+        elif os.path.exists("PM_092_06 tháng.xlsx"):
+            pm092_file = "PM_092_06 tháng.xlsx"
             pm092_exists = True
         
         if pm092_exists:
@@ -484,7 +484,16 @@ with tab2:
             for proj_code in ["VTAD2606001", "VTAD2606002", "VTAD2605001"]:
                 our_sum = df_month_v[df_month_v["project_code"] == proj_code]["amount"].sum()
                 pm_proj_data = pm_data.get(proj_code, {})
-                pm_sum = pm_proj_data.get("net", 0.0) if pm_proj_data.get("month") == selected_month_num else 0.0
+                
+                # Use per-month data if available (new multi-month format)
+                pm_by_month = pm_proj_data.get("by_month", {})
+                if pm_by_month and selected_month_num in pm_by_month:
+                    pm_sum = pm_by_month[selected_month_num]["net"]
+                elif pm_proj_data.get("month") == selected_month_num:
+                    # Backward compatibility: single-month file
+                    pm_sum = pm_proj_data.get("net", 0.0)
+                else:
+                    pm_sum = 0.0
                 
                 diff = our_sum - pm_sum
                 is_match = abs(diff) < 1.0 # Float threshold
