@@ -523,12 +523,15 @@ def generate_voltage_separation_data(import_records, export_records):
     df_grouped = df.groupby(["tháng", "project_code", "voltage"])["amount"].sum().reset_index()
     return df_grouped
 
-def write_to_voltage_template(df_grouped, template_path, output_path):
+def write_to_voltage_template(df_grouped, template_path, output_path, pm_data=None):
     """
     Generates a multi-sheet Excel workbook based on Tách PP-BL.xlsx template.
     Creates a worksheet for each month present, writes project voltage separation lines,
     inserts live Excel formulas, and cell-by-cell copies all font styles, colors, and borders
     from blueprints of rows 12, 13, and 14 in the template.
+    
+    If pm_data is provided (from parse_pm_092), refund rows (Hoàn nhập) are added
+    per project, classified by voltage level.
     """
     wb_template = openpyxl.load_workbook(template_path, data_only=False)
     sheet_blueprint = wb_template.active # Sheet1 acts as blueprint
@@ -579,7 +582,16 @@ def write_to_voltage_template(df_grouped, template_path, output_path):
         df_month = df_grouped[df_grouped["tháng"] == month]
         
         # Get unique projects in this month
-        projects_in_month = sorted(df_month["project_code"].unique())
+        projects_in_month = list(sorted(df_month["project_code"].unique()))
+        
+        # Also include projects that only have refunds in PM_092 for this month
+        refund_by_voltage_month = {}
+        if pm_data:
+            refund_by_voltage_month = get_pm092_refund_by_voltage(pm_data, month_int)
+            for rp in refund_by_voltage_month:
+                if rp not in projects_in_month:
+                    projects_in_month.append(rp)
+            projects_in_month = sorted(projects_in_month)
         
         # Delete original rows 12, 13, 14
         original_max = sheet_month.max_row
@@ -600,8 +612,10 @@ def write_to_voltage_template(df_grouped, template_path, output_path):
         for proj_code in projects_in_month:
             proj_name = PROJECT_NAMES.get(proj_code, f"{proj_code} - Dự án Sửa chữa lớn")
             df_proj = df_month[df_month["project_code"] == proj_code]
+            proj_refunds = refund_by_voltage_month.get(proj_code, {})
             
             proj_start_row = curr_row
+            row_count_in_proj = 0
             
             # Write both Medium and Low voltage rows for each project
             for v_idx, vol in enumerate(["Trung thế", "Hạ thế"]):
@@ -609,9 +623,9 @@ def write_to_voltage_template(df_grouped, template_path, output_path):
                 amt_val = df_vol["amount"].sum() if not df_vol.empty else 0.0
                 
                 # Column A: STT (Only on first row of project)
-                sheet_month.cell(row=curr_row, column=1).value = stt_counter if v_idx == 0 else None
+                sheet_month.cell(row=curr_row, column=1).value = stt_counter if row_count_in_proj == 0 else None
                 # Column B: Project Name (Only on first row)
-                sheet_month.cell(row=curr_row, column=2).value = proj_name if v_idx == 0 else None
+                sheet_month.cell(row=curr_row, column=2).value = proj_name if row_count_in_proj == 0 else None
                 # Column C: Project Code
                 sheet_month.cell(row=curr_row, column=3).value = proj_code
                 # Column D: Voltage Level
@@ -638,21 +652,55 @@ def write_to_voltage_template(df_grouped, template_path, output_path):
                         if style["number_format"]: cell.number_format = style["number_format"]
                         
                 curr_row += 1
+                row_count_in_proj += 1
+            
+            # Write refund rows (Hoàn nhập) from PM_092
+            if proj_refunds:
+                for vol_label in ["Trung thế", "Hạ thế", "Chưa phân loại"]:
+                    refund_amt = proj_refunds.get(vol_label, 0.0)
+                    if refund_amt > 0:
+                        neg_amt = -refund_amt
+                        
+                        sheet_month.cell(row=curr_row, column=1).value = None
+                        sheet_month.cell(row=curr_row, column=2).value = None
+                        sheet_month.cell(row=curr_row, column=3).value = proj_code
+                        sheet_month.cell(row=curr_row, column=4).value = f"Hoàn nhập - {vol_label}"
+                        sheet_month.cell(row=curr_row, column=5).value = neg_amt
+                        sheet_month.cell(row=curr_row, column=6).value = f"=E{curr_row}*80.79%"
+                        sheet_month.cell(row=curr_row, column=7).value = f"=E{curr_row}-F{curr_row}"
+                        
+                        # Apply Hạ thế style (row 13) for refund rows
+                        bp = blueprints[13]
+                        for col_idx in range(1, 9):
+                            cell = sheet_month.cell(row=curr_row, column=col_idx)
+                            style = bp.get(col_idx)
+                            if style:
+                                if style["font"]: cell.font = style["font"]
+                                if style["fill"]: cell.fill = style["fill"]
+                                if style["border"]: cell.border = style["border"]
+                                if style["alignment"]: cell.alignment = style["alignment"]
+                                if style["number_format"]: cell.number_format = style["number_format"]
+                        
+                        curr_row += 1
+                        row_count_in_proj += 1
                 
-            # Merge STT (Col A) and Project Name (Col B) for the project rows (Medium and Low Voltage)
-            sheet_month.merge_cells(start_row=proj_start_row, start_column=1, end_row=proj_start_row+1, end_column=1)
-            sheet_month.merge_cells(start_row=proj_start_row, start_column=2, end_row=proj_start_row+1, end_column=2)
+            # Merge STT (Col A) and Project Name (Col B) for all project rows
+            proj_end_row = proj_start_row + row_count_in_proj - 1
+            if row_count_in_proj > 1:
+                sheet_month.merge_cells(start_row=proj_start_row, start_column=1, end_row=proj_end_row, end_column=1)
+                sheet_month.merge_cells(start_row=proj_start_row, start_column=2, end_row=proj_end_row, end_column=2)
             
             # Re-apply styling for Col A and B bottom cells to keep borders and fill consistent
-            for col_idx in [1, 2]:
-                cell = sheet_month.cell(row=proj_start_row+1, column=col_idx)
-                style = blueprints[13].get(col_idx)
-                if style:
-                    if style["font"]: cell.font = style["font"]
-                    if style["fill"]: cell.fill = style["fill"]
-                    if style["border"]: cell.border = style["border"]
-                    if style["alignment"]: cell.alignment = style["alignment"]
-                    if style["number_format"]: cell.number_format = style["number_format"]
+            for merge_r in range(proj_start_row + 1, proj_end_row + 1):
+                for col_idx in [1, 2]:
+                    cell = sheet_month.cell(row=merge_r, column=col_idx)
+                    style = blueprints[13].get(col_idx)
+                    if style:
+                        if style["font"]: cell.font = style["font"]
+                        if style["fill"]: cell.fill = style["fill"]
+                        if style["border"]: cell.border = style["border"]
+                        if style["alignment"]: cell.alignment = style["alignment"]
+                        if style["number_format"]: cell.number_format = style["number_format"]
             
             stt_counter += 1
             
@@ -798,15 +846,63 @@ def write_detailed_scl_classification(df_scl, template_path, output_path):
     wb.save(output_path)
     return len(df_scl)
 
+def classify_pm092_voltage(desc):
+    """
+    Classifies a PM_092 credit (refund/return) transaction into voltage level
+    based on keywords found in the description.
+    Returns: "Trung thế", "Hạ thế", or "Chưa phân loại"
+    """
+    if not desc:
+        return "Chưa phân loại"
+    
+    d = str(desc).upper().replace(" ", "")
+    d_original = str(desc).upper()
+    
+    # --- Hạ thế indicators (check first, more specific) ---
+    ha_keywords = ["HẠ THẾ", "HẠ THÊ", "HA THE", "TI HẠ", "TIHẠ"]
+    for kw in ha_keywords:
+        if kw.replace(" ", "") in d:
+            return "Hạ thế"
+    
+    # --- Trung thế indicators ---
+    # "TI TT" = TI trung thế, "TT SCL" = trung thế SCL, "TT thay" = trung thế thay
+    trung_keywords = ["TRUNG THẾ", "TRUNG THÊ", "TRUNG THE", "TITT", "TTSCL", "TTTHAY"]
+    for kw in trung_keywords:
+        if kw.replace(" ", "") in d:
+            return "Trung thế"
+    
+    # "TU" alone (without TI) suggests voltage transformer = Trung thế
+    # But "TU, TI" or "TI, TU" is mixed → Chưa phân loại
+    # Use regex to find standalone words (handles commas, punctuation)
+    import re as _re
+    words_in_desc = _re.findall(r'\b[A-ZÀ-Ỹa-zà-ỹ]+\b', d_original)
+    has_tu = "TU" in words_in_desc
+    has_ti = "TI" in words_in_desc
+    
+    # Check for comma-separated patterns like "TU, TI" or "TI, TU"
+    if has_tu and has_ti:
+        return "Chưa phân loại"
+    if has_tu and not has_ti:
+        return "Trung thế"
+    if has_ti and not has_tu:
+        # TI alone without voltage indicator → check further
+        # If no trung/ha indicator found, classify as Hạ thế (TI hạ thế is more common)
+        return "Hạ thế"
+    
+    return "Chưa phân loại"
+
+
 def parse_pm_092(file_path):
     """
     Parses PM_092.xlsx (Subledger Account Book for Account 2413).
     Supports both single-month and multi-month files.
     Groups transactions by project code AND month (based on actual transaction dates).
     Returns a dict: {project_code: {"month": latest_month, "debit": total_debit, "credit": total_credit, "net": total_net,
-                      "by_month": {month_num: {"debit": sum, "credit": sum, "net": sum}}}}
+                      "by_month": {month_num: {"debit": sum, "credit": sum, "net": sum}},
+                      "credit_lines": [{"month": m, "credit": val, "desc": desc}, ...]}}
     The top-level "month"/"debit"/"credit"/"net" are kept for backward compatibility and represent
     the cumulative totals across all months. The "by_month" sub-dict allows per-month reconciliation.
+    The "credit_lines" list stores individual credit transactions with descriptions for voltage classification.
     """
     if isinstance(file_path, str) and not os.path.exists(file_path):
         return {}
@@ -829,7 +925,7 @@ def parse_pm_092(file_path):
             header_month = datetime.datetime.now().month
             
         current_project = None
-        # Nested structure: {project_code: {"by_month": {month: {"debit":0, "credit":0, "net":0}}, "debit":0, "credit":0, "net":0, "month": header_month}}
+        # Nested structure with credit_lines for detailed refund tracking
         project_data = {}
         
         for r in range(12, ws.max_row + 1):
@@ -842,7 +938,8 @@ def parse_pm_092(file_path):
                     project_data[current_project] = {
                         "month": header_month,
                         "debit": 0.0, "credit": 0.0, "net": 0.0,
-                        "by_month": {}
+                        "by_month": {},
+                        "credit_lines": []
                     }
                 continue
                 
@@ -851,6 +948,8 @@ def parse_pm_092(file_path):
             if isinstance(date_val, (datetime.datetime, datetime.date)):
                 debit = clean_numeric(ws.cell(row=r, column=5).value or 0.0)
                 credit = clean_numeric(ws.cell(row=r, column=6).value or 0.0)
+                desc_val = ws.cell(row=r, column=4).value
+                desc_str = str(desc_val).strip() if desc_val else ""
                 
                 if current_project:
                     # Determine month from the actual transaction date
@@ -867,6 +966,14 @@ def parse_pm_092(file_path):
                     project_data[current_project]["debit"] += debit
                     project_data[current_project]["credit"] += credit
                     
+                    # Store individual credit lines for voltage classification
+                    if credit > 0:
+                        project_data[current_project]["credit_lines"].append({
+                            "month": txn_month,
+                            "credit": credit,
+                            "desc": desc_str
+                        })
+                    
         # Calculate Net values
         for proj in project_data:
             project_data[proj]["net"] = project_data[proj]["debit"] - project_data[proj]["credit"]
@@ -878,3 +985,35 @@ def parse_pm_092(file_path):
     except Exception as e:
         print(f"Error parsing PM_092: {e}", file=sys.stderr)
         return {}
+
+
+def get_pm092_refund_by_voltage(pm_data, month):
+    """
+    Aggregates PM_092 credit (refund/return) amounts by project code and voltage level
+    for a given month.
+    
+    Args:
+        pm_data: dict returned by parse_pm_092()
+        month: month number to filter
+        
+    Returns:
+        dict: {project_code: {"Trung thế": amount, "Hạ thế": amount, "Chưa phân loại": amount}}
+    """
+    result = {}
+    
+    for proj_code, proj_data in pm_data.items():
+        credit_lines = proj_data.get("credit_lines", [])
+        month_credits = [cl for cl in credit_lines if cl["month"] == month]
+        
+        if not month_credits:
+            continue
+            
+        voltage_sums = {"Trung thế": 0.0, "Hạ thế": 0.0, "Chưa phân loại": 0.0}
+        
+        for cl in month_credits:
+            vol = classify_pm092_voltage(cl["desc"])
+            voltage_sums[vol] += cl["credit"]
+            
+        result[proj_code] = voltage_sums
+        
+    return result

@@ -27,7 +27,9 @@ from data_processor import (
     clean_project_code,
     PROJECT_NAMES,
     write_detailed_scl_classification,
-    parse_pm_092
+    parse_pm_092,
+    classify_pm092_voltage,
+    get_pm092_refund_by_voltage
 )
 
 # Default File Paths in the Workspace Directory
@@ -229,7 +231,13 @@ if files_changed or st.session_state.parsed_import is None or st.session_state.p
                 # 2. Write SCL voltage separation output file (Tách PP-BL)
                 if os.path.exists(DEFAULT_TEMPLATE_V):
                     df_v = generate_voltage_separation_data(imp_records, exp_records)
-                    write_to_voltage_template(df_v, DEFAULT_TEMPLATE_V, DEFAULT_OUTPUT_V)
+                    # Parse PM_092 for refund data to include in voltage template
+                    pm_data_auto = None
+                    if uploaded_pm092 is not None:
+                        pm_data_auto = parse_pm_092(uploaded_pm092)
+                    elif os.path.exists("PM_092_06 tháng.xlsx"):
+                        pm_data_auto = parse_pm_092("PM_092_06 tháng.xlsx")
+                    write_to_voltage_template(df_v, DEFAULT_TEMPLATE_V, DEFAULT_OUTPUT_V, pm_data=pm_data_auto)
 
                 # 3. Write detailed SCL classification sheet TachPP_BL_ChiTiet.xlsx
                 if os.path.exists(DEFAULT_TEMPLATE):
@@ -530,7 +538,16 @@ with tab2:
             )
             st.markdown("---")
             
-        total_scl_cost = df_month_v["amount"].sum()
+        # Get refund data from PM_092 by voltage for selected month
+        refund_by_voltage = {}
+        total_refund = 0.0
+        if pm092_exists:
+            refund_by_voltage = get_pm092_refund_by_voltage(pm_data, selected_month_num)
+            for proj_refunds in refund_by_voltage.values():
+                total_refund += sum(proj_refunds.values())
+        
+        total_scl_cost_gross = df_month_v["amount"].sum()
+        total_scl_cost = total_scl_cost_gross - total_refund
         total_pp_share = total_scl_cost * 0.8079
         total_bl_share = total_scl_cost * 0.1921
         
@@ -539,7 +556,7 @@ with tab2:
             <div class="kpi-card kpi-voltage">
                 <div class="kpi-title">Tổng Chi Phí SCL (Tháng {int(selected_month_num)})</div>
                 <div class="kpi-value">{total_scl_cost:,.0f} <span style='font-size: 1.1rem;'>VNĐ</span></div>
-                <div class="kpi-sub">Tổng chi phí phát sinh trong tháng</div>
+                <div class="kpi-sub">Phát sinh: {total_scl_cost_gross:,.0f} | Hoàn nhập: -{total_refund:,.0f}</div>
             </div>
             <div class="kpi-card kpi-import">
                 <div class="kpi-title">Khâu Phân Phối (80.79%)</div>
@@ -560,32 +577,61 @@ with tab2:
         preview_rows = []
         stt = 1
         projects_m = sorted(df_month_v["project_code"].unique())
+        # Also include projects that only have refunds in PM_092
+        pm_only_projects = [p for p in refund_by_voltage.keys() if p not in projects_m]
+        all_projects = list(projects_m) + sorted(pm_only_projects)
         
-        for proj_code in projects_m:
+        for proj_code in all_projects:
             proj_name = PROJECT_NAMES.get(proj_code, f"{proj_code} - Dự án Sửa chữa lớn")
             df_proj = df_month_v[df_month_v["project_code"] == proj_code]
+            proj_refunds = refund_by_voltage.get(proj_code, {})
             
-            for v_idx, vol in enumerate(["Trung thế", "Hạ thế"]):
+            row_idx_in_proj = 0  # Track row index within this project for STT/name display
+            
+            # Standard voltage rows (Xuất - phát sinh)
+            for vol in ["Trung thế", "Hạ thế"]:
                 df_vol = df_proj[df_proj["voltage"] == vol]
                 amt = df_vol["amount"].sum() if not df_vol.empty else 0.0
                 dist = amt * 0.8079
-                retail = amt * 0.1921 # equivalent to E - F
+                retail = amt * 0.1921
                 
                 preview_rows.append({
-                    "STT": stt if v_idx == 0 else "",
-                    "Tên công trình (Chi phí Sửa chữa lớn)": proj_name if v_idx == 0 else "",
+                    "STT": stt if row_idx_in_proj == 0 else "",
+                    "Tên công trình (Chi phí Sửa chữa lớn)": proj_name if row_idx_in_proj == 0 else "",
                     "Mã CT": proj_code,
                     "Trung-Hạ thế": vol,
                     "Tổng CP (E)": amt,
                     "Khâu phân phối (80.79% - F)": dist,
                     "Khâu bán lẻ (19.21% - G)": retail
                 })
+                row_idx_in_proj += 1
+            
+            # Refund rows (Hoàn nhập) from PM_092
+            if proj_refunds:
+                for vol_label in ["Trung thế", "Hạ thế", "Chưa phân loại"]:
+                    refund_amt = proj_refunds.get(vol_label, 0.0)
+                    if refund_amt > 0:
+                        neg_amt = -refund_amt
+                        dist_r = neg_amt * 0.8079
+                        retail_r = neg_amt * 0.1921
+                        
+                        preview_rows.append({
+                            "STT": stt if row_idx_in_proj == 0 else "",
+                            "Tên công trình (Chi phí Sửa chữa lớn)": proj_name if row_idx_in_proj == 0 else "",
+                            "Mã CT": proj_code,
+                            "Trung-Hạ thế": f"⤺ Hoàn nhập - {vol_label}",
+                            "Tổng CP (E)": neg_amt,
+                            "Khâu phân phối (80.79% - F)": dist_r,
+                            "Khâu bán lẻ (19.21% - G)": retail_r
+                        })
+                        row_idx_in_proj += 1
+            
             stt += 1
             
         df_preview = pd.DataFrame(preview_rows)
         
         if not df_preview.empty:
-            # Append Total Sum Row
+            # Append Total Sum Row (net of refunds)
             tot_row = {
                 "STT": "Tổng cộng",
                 "Tên công trình (Chi phí Sửa chữa lớn)": "",
@@ -606,7 +652,7 @@ with tab2:
                     "Khâu bán lẻ (19.21% - G)": st.column_config.NumberColumn("Khâu bán lẻ (19.21% - G)", format="%,.0f")
                 },
                 use_container_width=True,
-                height=300
+                height=400
             )
             
         # Download Buttons Side-by-Side
