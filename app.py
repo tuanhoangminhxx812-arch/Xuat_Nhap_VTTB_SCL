@@ -42,6 +42,61 @@ DEFAULT_TEMPLATE_V = "Tách PP-BL.xlsx"
 DEFAULT_OUTPUT_V = "Tach_ChiPhi_PP_BL.xlsx"
 DEFAULT_OUTPUT_DETAILED = "TachPP_BL_ChiTiet.xlsx"
 
+UPDATE_DIR = "update"
+os.makedirs(UPDATE_DIR, exist_ok=True)
+CACHE_FILE = ".cache_data.pkl"
+
+def find_latest_file(pattern_keywords, default_filename=None):
+    """
+    Finds the latest matching file in update directory first, then root directory.
+    Sorts by last modified time (newest first).
+    """
+    search_dirs = [UPDATE_DIR, "Update mới", "."]
+    for s_dir in search_dirs:
+        if not os.path.exists(s_dir):
+            continue
+        matching_files = []
+        try:
+            for fname in os.listdir(s_dir):
+                if fname.startswith("~$") or not fname.endswith(".xlsx"):
+                    continue
+                fname_upper = fname.upper()
+                if all(k.upper() in fname_upper for k in pattern_keywords):
+                    full_path = os.path.join(s_dir, fname)
+                    matching_files.append((os.path.getmtime(full_path), full_path))
+        except Exception:
+            pass
+        if matching_files:
+            matching_files.sort(key=lambda x: x[0], reverse=True)
+            return matching_files[0][1]
+            
+    if default_filename and os.path.exists(default_filename):
+        return default_filename
+    return None
+
+def save_cache(imp_records, exp_records, import_source, export_source):
+    try:
+        data = {
+            "imp_records": imp_records,
+            "exp_records": exp_records,
+            "import_source": import_source,
+            "export_source": export_source,
+            "updated_at": datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        }
+        with open(CACHE_FILE, "wb") as f:
+            pickle.dump(data, f)
+    except Exception as e:
+        print(f"Error saving cache: {e}")
+
+def load_cache():
+    if os.path.exists(CACHE_FILE):
+        try:
+            with open(CACHE_FILE, "rb") as f:
+                return pickle.load(f)
+        except Exception as e:
+            print(f"Error loading cache: {e}")
+    return None
+
 # Custom Premium Styling & Outfitted Typography
 st.markdown("""
 <style>
@@ -147,31 +202,25 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Helper function to get last modified times of default files on disk
-def get_file_mtimes():
-    mtimes = {}
-    for key, path in [
-        ("import", DEFAULT_IMPORT), 
-        ("export", DEFAULT_EXPORT), 
-        ("template", DEFAULT_TEMPLATE),
-        ("template_v", DEFAULT_TEMPLATE_V),
-        ("mapping_v", "TachPP_BL mẫu.xlsx")
-    ]:
-        if os.path.exists(path):
-            mtimes[key] = os.path.getmtime(path)
-        else:
-            mtimes[key] = 0.0
-    return mtimes
-
 # Initialize Session States
 if "parsed_import" not in st.session_state:
     st.session_state.parsed_import = None
 if "parsed_export" not in st.session_state:
     st.session_state.parsed_export = None
-if "file_mtimes" not in st.session_state:
-    st.session_state.file_mtimes = {}
-if "auto_consolidated" not in st.session_state:
-    st.session_state.auto_consolidated = False
+if "cache_meta" not in st.session_state:
+    st.session_state.cache_meta = {}
+
+# Fast load from disk cache if session state is empty on startup
+if st.session_state.parsed_import is None or st.session_state.parsed_export is None:
+    cached_data = load_cache()
+    if cached_data:
+        st.session_state.parsed_import = cached_data.get("imp_records")
+        st.session_state.parsed_export = cached_data.get("exp_records")
+        st.session_state.cache_meta = {
+            "import_source": cached_data.get("import_source", "Cache"),
+            "export_source": cached_data.get("export_source", "Cache"),
+            "updated_at": cached_data.get("updated_at", "Không rõ")
+        }
 
 # Banner Title
 st.markdown("""
@@ -182,12 +231,26 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---- SIDEBAR DESIGN ----
+st.sidebar.markdown("### 🔄 Cập nhật dữ liệu")
+st.sidebar.info("📁 **Thư mục `update`**: Đặt các file Excel mới vào thư mục `update/` rồi nhấn nút bên dưới để tổng hợp dữ liệu mới.")
+
+do_update = st.sidebar.button("⚡ Cập nhật dữ liệu mới", type="primary", use_container_width=True)
+
+if st.session_state.cache_meta.get("updated_at"):
+    st.sidebar.caption(f"🕒 Lần cập nhật gần nhất: {st.session_state.cache_meta['updated_at']}")
+    if st.session_state.cache_meta.get("import_source"):
+        imp_name = os.path.basename(st.session_state.cache_meta['import_source'])
+        st.sidebar.caption(f"📥 File Nhập: `{imp_name}`")
+    if st.session_state.cache_meta.get("export_source"):
+        exp_name = os.path.basename(st.session_state.cache_meta['export_source'])
+        st.sidebar.caption(f"📤 File Xuất: `{exp_name}`")
+
+st.sidebar.markdown("---")
 st.sidebar.markdown("### ⚙️ Cấu hình dữ liệu")
 
 # Interactive filter controls
 scl_only = st.sidebar.toggle("🔍 Chỉ lọc giao dịch SCL (Sửa chữa lớn)", value=True, 
                              help="Nếu bật, chỉ tổng hợp các giao dịch phục vụ sửa chữa lớn (có từ khóa SCL trong nội dung/chứng từ).")
-
 
 # Manual file overrides (Upload custom files)
 st.sidebar.markdown("---")
@@ -196,59 +259,82 @@ uploaded_import = st.sidebar.file_uploader("Upload file Nhập mới (INV-007A)"
 uploaded_export = st.sidebar.file_uploader("Upload file Xuất mới (INV-009)", type=["xlsx"])
 uploaded_pm092 = st.sidebar.file_uploader("Upload sổ chi tiết SCL (PM_092)", type=["xlsx"])
 
-# ---- AUTO-CONSOLIDATION LOGIC (FILE WATCHER) ----
-current_mtimes = get_file_mtimes()
-files_changed = False
+# Function to execute data processing when Update button is clicked
+def process_and_update_data():
+    import_file = uploaded_import if uploaded_import else find_latest_file(["INV", "007"], DEFAULT_IMPORT)
+    export_file = uploaded_export if uploaded_export else find_latest_file(["INV", "009"], DEFAULT_EXPORT)
+    pm092_file = uploaded_pm092 if uploaded_pm092 else find_latest_file(["PM", "092"], "PM_092_06 tháng.xlsx")
 
-# Detect if file timestamps changed on disk compared to cached timestamps
-if st.session_state.file_mtimes != current_mtimes:
-    files_changed = True
-    st.session_state.file_mtimes = current_mtimes
+    has_imp = uploaded_import or (import_file and os.path.exists(str(import_file)))
+    has_exp = uploaded_export or (export_file and os.path.exists(str(export_file)))
 
-# Trigger parsing if files changed or if not already loaded
-if files_changed or st.session_state.parsed_import is None or st.session_state.parsed_export is None:
-    # Use uploaded files if present, else use default local files
-    import_file = uploaded_import if uploaded_import else DEFAULT_IMPORT
-    export_file = uploaded_export if uploaded_export else DEFAULT_EXPORT
-    
-    if (uploaded_import or os.path.exists(DEFAULT_IMPORT)) and (uploaded_export or os.path.exists(DEFAULT_EXPORT)):
-        with st.spinner("🔄 Phát hiện thay đổi hoặc tải mới! Đang xử lý và tổng hợp cả 2 báo cáo..."):
-            try:
-                # Core parsing
-                imp_records = parse_import(import_file)
-                exp_records = parse_export(export_file)
-                
-                # Cache parsed results
-                st.session_state.parsed_import = imp_records
-                st.session_state.parsed_export = exp_records
-                st.session_state.auto_consolidated = True
-                
-                # 1. Write standard consolidation output file
-                if os.path.exists(DEFAULT_TEMPLATE):
-                    df_full = consolidate_data(imp_records, exp_records, scl_only=False) # Get all for saving default file
-                    write_to_template(df_full, DEFAULT_TEMPLATE, DEFAULT_OUTPUT)
-                
-                # 2. Write SCL voltage separation output file (Tách PP-BL)
-                if os.path.exists(DEFAULT_TEMPLATE_V):
-                    df_v = generate_voltage_separation_data(imp_records, exp_records)
-                    # Parse PM_092 for refund data to include in voltage template
-                    pm_data_auto = None
-                    if uploaded_pm092 is not None:
-                        pm_data_auto = parse_pm_092(uploaded_pm092)
-                    elif os.path.exists("PM_092_06 tháng.xlsx"):
-                        pm_data_auto = parse_pm_092("PM_092_06 tháng.xlsx")
-                    write_to_voltage_template(df_v, DEFAULT_TEMPLATE_V, DEFAULT_OUTPUT_V, pm_data=pm_data_auto)
+    if not has_imp or not has_exp:
+        st.error("⚠️ Không tìm thấy file nguồn Nhập (INV-007A...) hoặc Xuất (INV-009...) trong thư mục 'update' hoặc thư mục gốc!")
+        return False
 
-                # 3. Write detailed SCL classification sheet TachPP_BL_ChiTiet.xlsx
-                if os.path.exists(DEFAULT_TEMPLATE):
-                    df_scl_only = consolidate_data(imp_records, exp_records, scl_only=True)
-                    write_detailed_scl_classification(df_scl_only, DEFAULT_TEMPLATE, DEFAULT_OUTPUT_DETAILED)
-                
-                st.toast("Tự động tổng hợp cả 2 báo cáo thành công!", icon="🔄")
-            except Exception as e:
-                st.error(f"Lỗi khi xử lý file Excel: {e}")
-    else:
-        st.warning("⚠️ Không tìm thấy file nguồn Nhập (INV-007A...) hoặc Xuất (INV-009...) trong thư mục. Vui lòng đặt file vào thư mục hoặc tải lên ở thanh menu bên trái.")
+    imp_name = uploaded_import.name if uploaded_import else os.path.basename(str(import_file))
+    exp_name = uploaded_export.name if uploaded_export else os.path.basename(str(export_file))
+
+    with st.spinner(f"🔄 Đang tổng hợp dữ liệu mới từ file Nhập (`{imp_name}`) và Xuất (`{exp_name}`)..."):
+        try:
+            # Core parsing
+            imp_records = parse_import(import_file)
+            exp_records = parse_export(export_file)
+            
+            # Cache in session state
+            st.session_state.parsed_import = imp_records
+            st.session_state.parsed_export = exp_records
+            
+            imp_src = uploaded_import.name if uploaded_import else str(import_file)
+            exp_src = uploaded_export.name if uploaded_export else str(export_file)
+            
+            save_cache(imp_records, exp_records, imp_src, exp_src)
+            st.session_state.cache_meta = {
+                "import_source": imp_src,
+                "export_source": exp_src,
+                "updated_at": datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+            }
+            
+            # 1. Write standard consolidation output file
+            if os.path.exists(DEFAULT_TEMPLATE):
+                df_full = consolidate_data(imp_records, exp_records, scl_only=False)
+                write_to_template(df_full, DEFAULT_TEMPLATE, DEFAULT_OUTPUT)
+            
+            # 2. Write SCL voltage separation output file (Tách PP-BL)
+            if os.path.exists(DEFAULT_TEMPLATE_V):
+                df_v = generate_voltage_separation_data(imp_records, exp_records)
+                pm_data_auto = None
+                if pm092_file:
+                    try:
+                        pm_data_auto = parse_pm_092(pm092_file)
+                    except Exception as e_pm:
+                        st.warning(f"Không thể đọc file PM_092: {e_pm}")
+                write_to_voltage_template(df_v, DEFAULT_TEMPLATE_V, DEFAULT_OUTPUT_V, pm_data=pm_data_auto)
+
+            # 3. Write detailed SCL classification sheet TachPP_BL_ChiTiet.xlsx
+            if os.path.exists(DEFAULT_TEMPLATE):
+                df_scl_only = consolidate_data(imp_records, exp_records, scl_only=True)
+                write_detailed_scl_classification(df_scl_only, DEFAULT_TEMPLATE, DEFAULT_OUTPUT_DETAILED)
+            
+            st.toast("✅ Đã cập nhật và tổng hợp dữ liệu mới thành công!", icon="🎉")
+            return True
+        except Exception as e:
+            st.error(f"Lỗi khi xử lý file Excel: {e}")
+            return False
+
+# Trigger update if sidebar button clicked
+if do_update:
+    if process_and_update_data():
+        st.rerun()
+
+# Check if data is loaded; if not, show prompt
+if st.session_state.parsed_import is None or st.session_state.parsed_export is None:
+    st.warning("⚠️ Chưa có dữ liệu được nạp vào ứng dụng.")
+    st.info("💡 **Hướng dẫn**: Hãy đặt các file Excel Nhập (INV-007A), Xuất (INV-009) và PM_092 mới vào thư mục `update` (hoặc tải ở menu bên trái), sau đó nhấn nút **'Cập nhật dữ liệu ngay'** bên dưới.")
+    if st.button("🔄 Cập nhật dữ liệu ngay", type="primary", use_container_width=True, key="main_init_update"):
+        if process_and_update_data():
+            st.rerun()
+    st.stop()
 
 # Use cached data
 imp_records = st.session_state.parsed_import if st.session_state.parsed_import else []
@@ -290,12 +376,10 @@ with tab1:
         ).strip()
     with col_f3:
         st.markdown("<div style='height: 1.8rem;'></div>", unsafe_allow_html=True)
-        re_run = st.button("🔄 Làm mới dữ liệu", use_container_width=True, key="tab1_rerun")
+        re_run = st.button("🔄 Cập nhật dữ liệu", use_container_width=True, key="tab1_rerun")
         if re_run:
-            # Clear cache to force reload
-            st.session_state.parsed_import = None
-            st.session_state.parsed_export = None
-            st.rerun()
+            if process_and_update_data():
+                st.rerun()
 
     # Apply Filters dynamically in the view
     wh_filter = selected_whs if len(selected_whs) > 0 else None
@@ -349,8 +433,8 @@ with tab1:
     </div>
     """, unsafe_allow_html=True)
 
-    if st.session_state.auto_consolidated:
-        st.success(f"⚡ **[Hệ thống tự động]**: Đã phát hiện thay đổi và ghi đè file tổng hợp thành công tại các đường dẫn local: `{DEFAULT_OUTPUT}`, `{DEFAULT_OUTPUT_V}`, và `{DEFAULT_OUTPUT_DETAILED}`!")
+    if st.session_state.get("auto_consolidated"):
+        st.success(f"⚡ **[Cập nhật thành công]**: Đã tổng hợp và ghi đè các file báo cáo thành công tại: `{DEFAULT_OUTPUT}`, `{DEFAULT_OUTPUT_V}`, và `{DEFAULT_OUTPUT_DETAILED}`!")
         st.session_state.auto_consolidated = False
 
     if not df_filtered.empty:
@@ -473,15 +557,8 @@ with tab2:
         df_month_v = df_v[df_v["tháng"] == selected_month_num]
         
         # Check if PM_092 is uploaded or local file is present
-        pm092_file = None
-        pm092_exists = False
-        
-        if uploaded_pm092 is not None:
-            pm092_file = uploaded_pm092
-            pm092_exists = True
-        elif os.path.exists("PM_092_06 tháng.xlsx"):
-            pm092_file = "PM_092_06 tháng.xlsx"
-            pm092_exists = True
+        pm092_file = uploaded_pm092 if uploaded_pm092 else find_latest_file(["PM", "092"], "PM_092_06 tháng.xlsx")
+        pm092_exists = pm092_file is not None and (os.path.exists(str(pm092_file)) if isinstance(pm092_file, str) else True)
         
         if pm092_exists:
             pm_data = parse_pm_092(pm092_file)
@@ -489,7 +566,8 @@ with tab2:
             
             recon_rows = []
             all_recon_match = True
-            for proj_code in ["VTAD2606001", "VTAD2606002", "VTAD2605001"]:
+            all_recon_projs = sorted(list(set(list(df_month_v["project_code"].unique()) + list(pm_data.keys()))))
+            for proj_code in all_recon_projs:
                 our_sum = df_month_v[df_month_v["project_code"] == proj_code]["amount"].sum()
                 pm_proj_data = pm_data.get(proj_code, {})
                 

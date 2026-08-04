@@ -172,6 +172,28 @@ def parse_export(file_path):
             
     return records
 
+def classify_import_type(desc, code=None):
+    """
+    Classifies an Import (NHAP) record:
+    - 'HOAN_TRA': Nhập lại / hoàn nhập vật tư thừa chưa sử dụng hoàn trả kho
+    - 'VTTH': Nhập vật tư thu hồi (tháo gỡ, thay thế, xác/phế liệu)
+    """
+    desc_str = str(desc or "").upper()
+    code_str = str(code or "").upper()
+    
+    hoan_tra_keywords = ["HOÀN NHẬP", "HOAN NHAP", "NHẬP LẠI", "NHAP LAI", "TRẢ LẠI", "TRA LAI", "KHÔNG SỬ DỤNG", "KHONG SU DUNG", "HOÀN TRẢ", "HOAN TRA"]
+    if any(k in desc_str for k in hoan_tra_keywords):
+        return "HOAN_TRA"
+        
+    vtth_keywords = ["THU HỒI", "THU HOI", "VTTH", "THÁO GỠ", "THAO GO", "THANH LÝ", "THANH LY", "XÁC", "PHẾ LIỆU"]
+    if any(k in desc_str for k in vtth_keywords):
+        return "VTTH"
+        
+    if code_str.endswith((".CXA", ".BXX")):
+        return "VTTH"
+        
+    return "VTTH" if "THU HỒI" in desc_str else "HOAN_TRA"
+
 def consolidate_data(import_records, export_records, scl_only=True, warehouse_filter=None, keyword_filter=None):
     """
     Consolidates parsed import and export records into a single formatted list.
@@ -206,6 +228,9 @@ def consolidate_data(import_records, export_records, scl_only=True, warehouse_fi
             m = r["date"].month
             y = r["date"].year
             
+        itype = classify_import_type(r["desc"], r["code"])
+        type_label = "Nhập - Hoàn Trả (Vật tư thừa)" if itype == "HOAN_TRA" else "Nhập - VTTH (Thu hồi tháo gỡ)"
+            
         rows.append({
             "Mã vật tư": r["code"],
             "Tên vật tư": r["name"],
@@ -221,7 +246,8 @@ def consolidate_data(import_records, export_records, scl_only=True, warehouse_fi
             "Nhập - Thành tiền": r["amount"],
             "Xuất - Số lượng": 0,
             "Xuất - Đơn giá": 0,
-            "Xuất - Thành tiền": 0
+            "Xuất - Thành tiền": 0,
+            "Loại giao dịch": type_label
         })
         
     # Process Exports
@@ -265,7 +291,8 @@ def consolidate_data(import_records, export_records, scl_only=True, warehouse_fi
             "Nhập - Thành tiền": 0,
             "Xuất - Số lượng": r["qty"],
             "Xuất - Đơn giá": r["price"],
-            "Xuất - Thành tiền": r["amount"]
+            "Xuất - Thành tiền": r["amount"],
+            "Loại giao dịch": "Xuất - Phục vụ SCL"
         })
         
     df = pd.DataFrame(rows)
@@ -326,7 +353,12 @@ def write_to_template(df, template_path, output_path):
                     if style["alignment"]: cell.alignment = style["alignment"]
                     if style["number_format"]: cell.number_format = style["number_format"]
                     
-    wb.save(output_path)
+    try:
+        wb.save(output_path)
+    except PermissionError:
+        print(f"Warning: File '{output_path}' is currently open in another program and cannot be saved.", file=sys.stderr)
+    except Exception as e:
+        print(f"Error saving '{output_path}': {e}", file=sys.stderr)
     return len(df)
 
 
@@ -338,7 +370,8 @@ def write_to_template(df, template_path, output_path):
 PROJECT_NAMES = {
     "VTAD2606001": "VTAD2606001 - Sửa chữa lớn TSCĐ hệ thống đo đếm trên địa bàn Công ty Điện Lực Vũng Tàu năm 2026 - Phần bảo trì TU, TI",
     "VTAD2606002": "VTAD2606002 - Sửa chữa lớn FCO, LA năm 2026",
-    "VTAD2605001": "VTAD2605001 - Sửa chữa lớn đường dây trung hạ thế, trạm biến áp năm 2026"
+    "VTAD2605001": "VTAD2605001 - Sửa chữa lớn đường dây trung hạ thế, trạm biến áp năm 2026",
+    "VTAD2608001": "VTAD2608001 - Sửa chữa lớn Công xa năm 2026"
 }
 
 VOLTAGE_MAPPING_CACHE = None
@@ -425,19 +458,12 @@ def clean_project_code(desc):
         return None
     # Standardize VTDA typo to VTAD
     desc_std = str(desc).upper().replace("VTDA", "VTAD")
-    words = desc_std.split()
-    for w in words:
-        if "VTAD" in w:
-            w_clean = w.strip(".,()[]{}").split("-")[0]
-            # Standardize standard prefixes
-            for p in ["VTAD2606001", "VTAD2606002", "VTAD2605001"]:
-                if p in w_clean:
-                    return p
-            # Match general code via regex
-            m = re.search(r'(VTAD\d+)', w_clean)
-            if m:
-                return m.group(1)
-            return w_clean
+    m = re.search(r'(VTAD\d{7})', desc_std)
+    if m:
+        return m.group(1)
+    m_gen = re.search(r'(VTAD\d+)', desc_std)
+    if m_gen:
+        return m_gen.group(1)
     return None
 
 def generate_voltage_separation_data(import_records, export_records):
@@ -482,7 +508,7 @@ def generate_voltage_separation_data(import_records, export_records):
             "amount": r["amount"]
         })
         
-    # Process Imports (NHAP - SCL Returns)
+    # Process Imports (NHAP - SCL Returns & VTTH)
     for r in import_records:
         # Space-insensitive SCL check
         desc_clean = r["desc"].replace(" ", "").upper() if r["desc"] else ""
@@ -508,12 +534,17 @@ def generate_voltage_separation_data(import_records, export_records):
         if isinstance(r["date"], (datetime.datetime, datetime.date)):
             m = r["date"].month
             
-        rows.append({
-            "tháng": m,
-            "project_code": proj_code,
-            "voltage": vol,
-            "amount": -r["amount"] # Subtract return amount
-        })
+        itype = classify_import_type(r["desc"], r["code"])
+        
+        # Only Hoàn Trả (unused exported material returns) reduces net exported material expense.
+        # VTTH (recovered tháo gỡ old materials) is NOT subtracted from exported material expense.
+        if itype == "HOAN_TRA":
+            rows.append({
+                "tháng": m,
+                "project_code": proj_code,
+                "voltage": vol,
+                "amount": -r["amount"] # Subtract return amount
+            })
         
     df = pd.DataFrame(rows)
     if df.empty:
@@ -745,7 +776,12 @@ def write_to_voltage_template(df_grouped, template_path, output_path, pm_data=No
     # Delete the blueprint sheet before saving
     wb_template.remove(wb_template[blueprint_name])
     
-    wb_template.save(output_path)
+    try:
+        wb_template.save(output_path)
+    except PermissionError:
+        print(f"Warning: File '{output_path}' is currently open in another program and cannot be saved.", file=sys.stderr)
+    except Exception as e:
+        print(f"Error saving '{output_path}': {e}", file=sys.stderr)
     return len(months)
 
 def write_detailed_scl_classification(df_scl, template_path, output_path):
@@ -832,7 +868,7 @@ def write_detailed_scl_classification(df_scl, template_path, output_path):
                     if style["alignment"]: cell.alignment = style["alignment"]
                     if style["number_format"]: cell.number_format = style["number_format"]
             
-            # Write Column P (PHÂN LOẠI)
+            # Write Column P (PHÂN LOẠI KHÂU TRUNG/HẠ ÁP)
             cell_p = sheet.cell(row=r_idx, column=16)
             cell_p.value = vol
             style_p = style_blueprint.get(16)
@@ -843,7 +879,23 @@ def write_detailed_scl_classification(df_scl, template_path, output_path):
                 if style_p["alignment"]: cell_p.alignment = style_p["alignment"]
                 if style_p["number_format"]: cell_p.number_format = "@"
                 
-    wb.save(output_path)
+            # Write Column Q (LOẠI GIAO DỊCH: Xuất / Nhập Hoàn Trả / Nhập VTTH)
+            cell_q = sheet.cell(row=r_idx, column=17)
+            cell_q.value = row_dict.get("Loại giao dịch", "")
+            style_q = style_blueprint.get(17) or style_p
+            if style_q:
+                if style_q["font"]: cell_q.font = style_q["font"]
+                if style_q["fill"]: cell_q.fill = style_q["fill"]
+                if style_q["border"]: cell_q.border = style_q["border"]
+                if style_q["alignment"]: cell_q.alignment = style_q["alignment"]
+                if style_q["number_format"]: cell_q.number_format = "@"
+                
+    try:
+        wb.save(output_path)
+    except PermissionError:
+        print(f"Warning: File '{output_path}' is currently open in another program and cannot be saved.", file=sys.stderr)
+    except Exception as e:
+        print(f"Error saving '{output_path}': {e}", file=sys.stderr)
     return len(df_scl)
 
 def classify_pm092_voltage(desc):
@@ -946,10 +998,16 @@ def parse_pm_092(file_path):
             # Detect Detail row (contains date in Column 2)
             date_val = ws.cell(row=r, column=2).value
             if isinstance(date_val, (datetime.datetime, datetime.date)):
-                debit = clean_numeric(ws.cell(row=r, column=5).value or 0.0)
-                credit = clean_numeric(ws.cell(row=r, column=6).value or 0.0)
+                v_code = str(ws.cell(row=r, column=3).value or "").strip()
                 desc_val = ws.cell(row=r, column=4).value
                 desc_str = str(desc_val).strip() if desc_val else ""
+                
+                # Filter out internal GL transfer entries ("K/c công trình hoàn thành" / "Kết chuyển")
+                if "K/C" in desc_str.upper() or "KẾT CHUYỂN" in desc_str.upper() or v_code.replace("'", "") == "2110":
+                    continue
+
+                debit = clean_numeric(ws.cell(row=r, column=5).value or 0.0)
+                credit = clean_numeric(ws.cell(row=r, column=6).value or 0.0)
                 
                 if current_project:
                     # Determine month from the actual transaction date
