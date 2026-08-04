@@ -3,6 +3,7 @@ import pandas as pd
 import datetime
 import os
 import sys
+import pickle
 
 # Set up page configurations first
 st.set_page_config(
@@ -95,6 +96,10 @@ def load_cache():
                 return pickle.load(f)
         except Exception as e:
             print(f"Error loading cache: {e}")
+            try:
+                os.remove(CACHE_FILE)
+            except Exception:
+                pass
     return None
 
 # Custom Premium Styling & Outfitted Typography
